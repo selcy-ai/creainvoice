@@ -51,6 +51,8 @@ Update this file whenever the current phase, active feature, or implementation s
 
 ## Next Up
 
+- **Change 6 (`13-change-creainvoice-clerk-neon-drizzle.md`) — build berjalan.** Repo sudah dipindahkan ke `selcy-ai/creainvoice` ( history penuh, `git remote set-url` selesai ). Target: rebrand total + Clerk auth + Neon/Drizzle. Model build: `omniroute/intern-ai/Atria-Dawn`. engineer tidur, berharap progress maksimal saat bangun; sisanya terdokumentasi.
+
 - *(kosong — feature 11 selesai; **project GA**. Backlog pasca-GA = daftar Open Questions di bawah, diambil satu per satu di chat terpisah.)*
 
 ## Open Questions
