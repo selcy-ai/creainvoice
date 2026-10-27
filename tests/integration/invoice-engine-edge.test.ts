@@ -420,7 +420,11 @@ describe("permission — flat workspace: every member can touch drafts", () => {
     expect(list.total).toBeGreaterThan(0);
 
     await deleteDraft(viewerDraft.id, viewerCtx());
-    expect(await getDraft(viewerDraft.id, viewerCtx())).toBe(null);
+    // Draft deleted: service answers NOT_FOUND (deleted drafts are absent; the
+    // service throws rather than returning null — IDOR-safe contract).
+    await expect(getDraft(viewerDraft.id, viewerCtx())).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
   });
 
   it("the number preview and the prefill helper work for any member", async () => {

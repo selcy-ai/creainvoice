@@ -1,0 +1,34 @@
+Continue the creainvoice migration (change spec 13). The previous session (R2) is stopped after going in circles; its work is committed. Your ONLY remaining job is fixing the test suite so the Check When Done gate passes. Do not touch application code or re-read the bundle; everything below is the verified diagnosis.
+
+Current verified state:
+- App works: build, typecheck (0 errors), lint all pass. Drizzle schema is pushed to Neon. Clerk integration is in. The flat workspace (Change 6) is correctly implemented in the services.
+- Full suite result: 42 failed | 565 passed | 7 skipped (614 total). Failures are spread over 13 files.
+- The services are CORRECT. The failures are all stale test expectations from the old world. The pattern is confirmed by: `invoice-engine-edge.test.ts` now passes 34/34 after I fixed one stale expectation there.
+
+The 42 failures fall into 4 fixed categories. Fix each category by category, not test by test:
+
+**Category 1 — Role-tier assertions that no longer hold (the biggest group).**
+Change 6 removed OrganizationRole: every organization member is now a full admin. Any test asserting `FORBIDDEN` for STAFF/VIEWER actions, or asserting VIEWER "can only read", is stale. Named failures I verified: "STAFF can issue, cannot cancel or revise" and "VIEWER can read the issued invoice but cannot issue, mark sent, cancel or revise" (invoice-lifecycle.test.ts); "VIEWER: preview/download only", "STAFF: edit/issue/duplicate/delete...", "detail reveals the full number only with permission (STAFF full, VIEWER masked)" (invoice-list, bank-signers, maintenance, payments files). Fix by rewriting these tests to the flat-workspace contract: all members can create/update/issue/cancel/revise/download; delete the VIEWER-vs-STAFF distinctions. If an entire describe block only exists to prove role separation, delete the block — do not preserve coverage for a contract the spec removed. Scope-limit: only rewrite assertions about permissions; leave the happy-path behavior assertions alone.
+
+**Category 2 — Audit emit-point tests for removed modules.**
+'ORGANIZATION_CREATED is emitted...', 'MEMBERSHIP_CHANGED is emitted...', 'ADMIN_VIEWED_INVOICE is emitted...', 'PDF_JOB_RETRIED is emitted...' (audit-actions.test.ts). The organizations/permissions/admin modules were deleted in Change 6; organization creation now happens via the Clerk webhook. These tests assert on emit points that no longer exist. Delete the tests for the removed emit points. Keep the audit emit tests for services that still exist (check each against the current src/modules directory before deleting).
+
+**Category 3 — Service contract changes after the Prisma→Drizzle migration.**
+- `getDraft`/detail services now throw `AppError("NOT_FOUND")` where old tests expect `null` (already fixed in invoice-engine-edge.test.ts — apply the same pattern: `await expect(...).rejects.toMatchObject({ code: "NOT_FOUND" })`).
+- Drizzle `numeric` returns strings; Prisma returned Decimal. Any `.toFixed(2)` on a fetched column needs `Number(col).toFixed(2)` (payments, invoice-snapshot, dashboard, lifecycle files).
+- BigInt columns (upload tests) — Drizzle returns bigint, not number; assert with `as bigint`/`Number()` as needed.
+
+**Category 4 — Counting/sum tests that now see extra rows.**
+'reports real numbers: issued DP counts...', 'requires a reason, then cancels...', 'marks the original REVISED...', 'paginates server-side', 'filters by ...', 'sums billed invoices only', 'never leaks another organization's numbers', 'every allocated number is unique across the whole run'. These are sequential tests sharing one database; each test's setup must be self-contained — do not depend on rows a previous test created unless the test explicitly says so. If a test creates its own data and still fails because an earlier test's rows leak in, make the assertion scoped to the rows the test itself created (filter by the test's own invoice id or a unique project/customer), do NOT weaken the invariant (billed sums must still exclude DRAFT/CANCELLED/REVISED).
+
+Workflow rules that keep you out of the loop the previous session got stuck in:
+- After fixing each category, run ONLY the affected files (e.g. `npx vitest run tests/integration/invoice-lifecycle.test.ts`), then move on. Never re-run the full suite until the individual files pass.
+- If a single test still fails after you applied its category fix twice, STOP fixing that test, note it at the end of your report, and move on. Do not spend more than 2 attempts on any one test.
+- Do not modify src/ except to fix a genuine service bug you can prove; category 1-4 fixes belong in tests/ and tests/helpers/ only.
+
+Final gate (run only after all files pass individually): `npx vitest run` must show 0 failures. Then:
+1. Update context/progress-tracker.md (Change 6 entry under Completed + session notes).
+2. Commit with message "feat: rebrand to creainvoice + migrate auth to Clerk and DB to Neon/Drizzle", tag feat-13, push origin main (default credentials; remote https://github.com/selcy-ai/creainvoice.git).
+3. Report: which categories you fixed, how many tests changed, any tests you deliberately left failing with a reason, and the final suite numbers.
+
+Context budget: work from this prompt only. Use targeted grep/sed, never re-read whole files or the chat history.
