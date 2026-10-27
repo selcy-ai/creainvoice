@@ -13,8 +13,8 @@ import { createProfile } from "@/modules/profiles/service";
 import { createDraft, getDraft } from "@/modules/invoices/service";
 import type { InvoiceDraftFormOutput } from "@/modules/invoices/schema";
 import { issueInvoice } from "@/modules/invoices/issue-service";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
+import { ctxFor } from "@/tests/helpers/context";
 import {
   addMembership,
   createOrganization,
@@ -28,11 +28,9 @@ let org: { id: string };
 let profileId: string;
 let customerId: string;
 
-function ownerCtx(): {
-  scope: { organizationId: string; role: OrganizationRole; userId: string };
-  request: null;
-} {
-  return { scope: { organizationId: org.id, role: "OWNER", userId: owner.id }, request: null };
+// Change 6: role tiers are gone — the context is flat (every member is admin).
+function ownerCtx() {
+  return ctxFor(org.id, owner.id);
 }
 
 function customerInput(): CustomerFormInput {
@@ -75,10 +73,10 @@ function draftInput(seq: number): InvoiceDraftFormOutput {
 beforeAll(async () => {
   await resetDatabase();
   owner = await createUser({ username: "nc.owner" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   await addMembership(owner.id, org.id, "OWNER");
 
-  const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
   const customer = await createCustomer(customerInput(), ownerCtx());
   customerId = customer.id;

@@ -9,7 +9,7 @@
 // the STATUS_PILL_CLASS map below; this file is THE single centralized
 // status-to-colour constant the change spec names.
 
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
 import {
   CircleCheckIcon,
   ClockIcon,

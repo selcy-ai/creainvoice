@@ -7,8 +7,8 @@
 
 import { actionRequest, formDataString, toActionError, zodFailure } from "@/lib/action";
 import { apiFailure, apiOk, type ActionResult } from "@/lib/api-response";
-import { requireSession } from "@/server/session";
-import { requireActiveOrgScope } from "@/modules/organizations/service";
+import { requireSession } from "@/lib/clerk";
+import { requireWorkspaceScope } from "@/modules/workspace/service";
 import {
   ensureProfile,
   getProfileForScope,
@@ -29,7 +29,7 @@ export async function updateProfileAction(
 ): Promise<ActionResult<{ profile: ProfileView }>> {
   try {
     const session = await requireSession();
-    const scope = await requireActiveOrgScope(session);
+    const scope = await requireWorkspaceScope(session);
     const ctx = { scope, request: await actionRequest() };
 
     const profileId = profileIdSchema.safeParse(formDataString(form, "profileId"));
@@ -69,7 +69,7 @@ export async function uploadLogoAction(
 ): Promise<ActionResult<{ profile: ProfileView }>> {
   try {
     const session = await requireSession();
-    const scope = await requireActiveOrgScope(session);
+    const scope = await requireWorkspaceScope(session);
     const ctx = { scope, request: await actionRequest() };
 
     const file = form.get("file");
@@ -94,7 +94,7 @@ export async function removeLogoAction(
 ): Promise<ActionResult<{ profile: ProfileView }>> {
   try {
     const session = await requireSession();
-    const scope = await requireActiveOrgScope(session);
+    const scope = await requireWorkspaceScope(session);
     const ctx = { scope, request: await actionRequest() };
 
     const profileId = profileIdSchema.safeParse(formDataString(form, "profileId"));
@@ -111,7 +111,7 @@ export async function removeLogoAction(
 export async function createDefaultProfileAction(): Promise<ActionResult<{ profileId: string }>> {
   try {
     const session = await requireSession();
-    const scope = await requireActiveOrgScope(session);
+    const scope = await requireWorkspaceScope(session);
     const profile = await ensureProfile({ scope, request: await actionRequest() });
     return apiOk({ profileId: profile.id });
   } catch (error) {

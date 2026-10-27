@@ -10,15 +10,20 @@
 // missing job after a rollback.
 
 import { AppError } from "@/lib/errors";
+import type { WorkspaceScope } from "@/modules/workspace/service";
 import { logAudit } from "@/modules/audit/service";
-import { assertCan, requireOrgScope } from "@/modules/permissions/service";
+import { assertCan, requireOrgScope } from "@/modules/workspace/permissions";
 import { getStorageService } from "@/modules/storage";
 import { safePdfFilename } from "@/modules/pdf/client";
-import { db } from "@/server/db";
-import type { OrganizationRole, PdfJob, PdfJobStatus, Prisma } from "@prisma/client";
+import { db, type Database } from "@/server/db";
+import { invoicePdfs, invoices, pdfJobs } from "@/db/schema";
+import type { PdfJobStatus } from "@/db/enums";
+import { and, desc, eq } from "drizzle-orm";
+
+type PdfJob = typeof pdfJobs.$inferSelect;
 
 export interface PdfServiceContext {
-  scope: { organizationId: string; role: OrganizationRole; userId: string };
+  scope: WorkspaceScope;
   request?: Request | null;
 }
 
@@ -42,23 +47,40 @@ export const PDF_STATUS_LABELS: Record<PdfJobStatus, string> = {
  * issue transaction (feature 05 does — the job row commits atomically with
  * the issue). Org-scoped read first: a foreign invoice id answers 404.
  */
+type DbLike = Pick<Database, "select" | "insert">;
+
+async function requireInvoiceInScope(
+  invoiceId: string,
+  organizationId: string,
+  client: Pick<Database, "select">,
+) {
+  const rows = await client
+    .select({ id: invoices.id, organizationId: invoices.organizationId })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  const invoice = rows[0];
+  if (!invoice || invoice.organizationId !== organizationId) {
+    throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
+  }
+  return invoice;
+}
+
 export async function enqueuePdfJob(
   invoiceId: string,
   ctx: PdfServiceContext,
-  tx?: Prisma.TransactionClient,
+  tx?: DbLike,
 ): Promise<PdfJob> {
   requireOrgScope(ctx.scope);
   const client = tx ?? db;
-  const invoice = await client.invoice.findUnique({
-    where: { id: invoiceId },
-    select: { id: true, organizationId: true },
-  });
-  if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
-    throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
-  }
-  return client.pdfJob.create({
-    data: { invoiceId: invoice.id, status: "PENDING", attempt: 0 },
-  });
+  const invoice = await requireInvoiceInScope(invoiceId, ctx.scope.organizationId, client);
+  const created = await client
+    .insert(pdfJobs)
+    .values({ invoiceId: invoice.id, status: "PENDING", attempt: 0 })
+    .returning();
+  const job = created[0];
+  if (!job) throw new AppError("INTERNAL_ERROR", "Job PDF gagal dibuat.");
+  return job;
 }
 
 /**
@@ -69,22 +91,23 @@ export async function enqueuePdfJob(
 export async function getPdfJob(
   invoiceId: string,
   ctx: PdfServiceContext,
-  tx?: Prisma.TransactionClient,
+  tx?: Pick<Database, "select">,
 ): Promise<PdfJobView | null> {
   requireOrgScope(ctx.scope);
   const client = tx ?? db;
-  const invoice = await client.invoice.findUnique({
-    where: { id: invoiceId },
-    select: { id: true, organizationId: true },
-  });
-  if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
-    throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
-  }
-  const job = await client.pdfJob.findFirst({
-    where: { invoiceId },
-    orderBy: { createdAt: "desc" },
-    select: { status: true, attempt: true, errorMessage: true, createdAt: true },
-  });
+  await requireInvoiceInScope(invoiceId, ctx.scope.organizationId, client);
+  const rows = await client
+    .select({
+      status: pdfJobs.status,
+      attempt: pdfJobs.attempt,
+      errorMessage: pdfJobs.errorMessage,
+      createdAt: pdfJobs.createdAt,
+    })
+    .from(pdfJobs)
+    .where(eq(pdfJobs.invoiceId, invoiceId))
+    .orderBy(desc(pdfJobs.createdAt))
+    .limit(1);
+  const job = rows[0];
   if (!job) return null;
   return {
     status: job.status,
@@ -111,26 +134,34 @@ export async function getOfficialPdf(
   ctx: PdfServiceContext,
 ): Promise<OfficialPdfView | null> {
   requireOrgScope(ctx.scope);
-  const invoice = await db.invoice.findUnique({
-    where: { id: invoiceId },
-    select: { id: true, organizationId: true, pdfPath: true },
-  });
+  const invoiceRows = await db
+    .select({
+      id: invoices.id,
+      organizationId: invoices.organizationId,
+      pdfPath: invoices.pdfPath,
+    })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  const invoice = invoiceRows[0];
   if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
     throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
   }
   if (!invoice.pdfPath) return null;
-  const pdf = await db.invoicePdf.findFirst({
-    where: { invoiceId },
-    orderBy: { version: "desc" },
-    select: {
-      storagePath: true,
-      originalFilename: true,
-      sizeBytes: true,
-      sha256: true,
-      version: true,
-      generatedAt: true,
-    },
-  });
+  const pdfRows = await db
+    .select({
+      storagePath: invoicePdfs.storagePath,
+      originalFilename: invoicePdfs.originalFilename,
+      sizeBytes: invoicePdfs.sizeBytes,
+      sha256: invoicePdfs.sha256,
+      version: invoicePdfs.version,
+      generatedAt: invoicePdfs.generatedAt,
+    })
+    .from(invoicePdfs)
+    .where(eq(invoicePdfs.invoiceId, invoiceId))
+    .orderBy(desc(invoicePdfs.version))
+    .limit(1);
+  const pdf = pdfRows[0];
   if (!pdf) return null;
   return {
     filename: pdf.originalFilename,
@@ -162,10 +193,17 @@ export async function downloadOfficialPdf(
   assertCan("invoice.download", ctx.scope);
   requireOrgScope(ctx.scope);
 
-  const invoice = await db.invoice.findUnique({
-    where: { id: invoiceId },
-    select: { id: true, organizationId: true, number: true, pdfPath: true },
-  });
+  const invoiceRows = await db
+    .select({
+      id: invoices.id,
+      organizationId: invoices.organizationId,
+      number: invoices.number,
+      pdfPath: invoices.pdfPath,
+    })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  const invoice = invoiceRows[0];
   if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
     throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
   }
@@ -179,11 +217,13 @@ export async function downloadOfficialPdf(
     throw new AppError("INTERNAL_ERROR", "File PDF tidak valid.");
   }
 
-  const pdf = await db.invoicePdf.findFirst({
-    where: { invoiceId },
-    orderBy: { version: "desc" },
-    select: { originalFilename: true, version: true },
-  });
+  const pdfRows = await db
+    .select({ originalFilename: invoicePdfs.originalFilename, version: invoicePdfs.version })
+    .from(invoicePdfs)
+    .where(eq(invoicePdfs.invoiceId, invoiceId))
+    .orderBy(desc(invoicePdfs.version))
+    .limit(1);
+  const pdf = pdfRows[0];
   const filename = pdf?.originalFilename ?? safePdfFilename(invoice.id, invoice.number);
 
   await logAudit({

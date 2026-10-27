@@ -19,18 +19,17 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { env } from "@/server/env";
-import { can } from "@/modules/permissions/service";
 import {
   INVOICES_PAGE_SIZE,
   INVOICE_SORT_FIELDS,
   listInvoiceFilterOptions,
   listInvoices,
 } from "@/modules/invoices/query-service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Invoice — invoice-me",
+  title: "Invoice — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -47,7 +46,7 @@ export default async function InvoicesPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   const params = await searchParams;
 
   const page = Math.max(1, Number(first(params.page)) || 1);
@@ -88,7 +87,7 @@ export default async function InvoicesPage({
     ),
     listInvoiceFilterOptions({ scope }),
   ]);
-  const mayCreate = can("invoice.draft.create", scope);
+  const mayCreate = Boolean(scope);
 
   return (
     <div className="flex flex-col gap-8">
@@ -119,7 +118,7 @@ export default async function InvoicesPage({
         filters={{ q, customer, profile, status, type, from, to, sort, dir }}
         options={options}
         mayCreate={mayCreate}
-        canOverrideOverpayment={can("payment.override", scope)}
+        canOverrideOverpayment={Boolean(scope)}
         uploadMaxMb={Math.round(env.UPLOAD_MAX_MB)}
       />
     </div>

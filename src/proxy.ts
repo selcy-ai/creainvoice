@@ -1,125 +1,47 @@
-// src/proxy.ts
-// Route protection (feature 01 spec item 5). Next.js 16 renamed the
-// middleware.ts convention to proxy.ts — same contract, see
+// src/proxy.ts — route protection (Change 6: Clerk).
+//
+// Next 16 renamed the middleware convention to proxy.ts — same contract, see
 // node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md.
 //
-// This is the REDIRECT layer (login, force-change, admin gate). It is not the
-// only guard: layouts re-check the session and the service layer re-checks
-// authorization, because a compromised process must not mean a bypass.
+// clerkMiddleware() authenticates the request and makes auth() work in the
+// render tree. By default every route is public in Clerk's middleware model;
+// the redirect logic lives in the layouts/pages (auth() + redirect), because
+// a compromised process must not mean a bypass.
+//
+// The Clerk webhook route (/api/clerk/webhook) authenticates with its own
+// Svix signing secret, so it never touches this layer.
 
-import { NextResponse, type NextRequest } from "next/server";
-import { auth } from "@/server/auth";
-import { logger } from "@/server/logger";
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-// Public pages: auth routes + the legal pages (feature 11C — /privacy and
-// /terms must be reachable WITHOUT a session, per security-standards
-// "halaman publik minimal rute /privacy dan /terms").
-const PUBLIC_PATHS = ["/login", "/forgot-password", "/privacy", "/terms"];
+// Pages reachable WITHOUT a Clerk session: the Clerk sign-in page and the
+// legal pages (security-standards: /privacy and /terms must be public).
+const isPublicRoute = createRouteMatcher([
+  "/login(.*)",
+  "/privacy(.*)",
+  "/terms(.*)",
+]);
 
-function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
-}
-
-export async function proxy(request: NextRequest): Promise<NextResponse> {
-  const { pathname, search } = request.nextUrl;
-
-  // Public paths (/login, /forgot-password, /privacy, /terms) are decided
-  // AFTER the session lookup so signed-in users are still kept off the AUTH
-  // pages (redirect to dashboard / change-password) — but the legal pages
-  // stay reachable for them. Anonymous visitors reach all four directly.
-  // The internal print route authenticates with its own signed token
-  // (feature 06) and is excluded before any session logic runs.
-  if (pathname.startsWith("/print")) return NextResponse.next();
-
-  let session: Awaited<ReturnType<typeof auth.api.getSession>> = null;
-  try {
-    session = await auth.api.getSession({ headers: request.headers });
-  } catch (error) {
-    // Fail closed: no readable session → treat as unauthenticated.
-    logger.error(
-      { module: "proxy", err: error instanceof Error ? error.message : String(error) },
-      "gagal membaca sesi — mengarahkan ke login",
-    );
-    session = null;
-  }
-
-  // Legal pages (/privacy, /terms) are reachable by everyone — signed-in or
-  // anonymous (they link from the cookie banner on every page). The AUTH
-  // pages (/login, /forgot-password) are NOT: signed-in users get redirected
-  // away from them.
-  if (pathname === "/privacy" || pathname === "/terms") {
-    return NextResponse.next();
-  }
-
-  const loginUrl = new URL("/login", request.url);
-  loginUrl.searchParams.set("next", `${pathname}${search}`);
-
-  if (!session) {
-    if (isPublicPath(pathname)) return NextResponse.next();
-    return NextResponse.redirect(loginUrl);
-  }
-
-  const mustChange = session.user.mustChangePassword === true;
-  const isSuperAdmin = session.user.platformRole === "SUPER_ADMIN";
-
-  // Signed-in users are kept off the AUTH pages (/login, /forgot-password)
-  // and routed to the force-change or dashboard. The legal pages (/privacy,
-  // /terms) are PUBLIC: signed-in users may read them normally (they link
-  // from the cookie banner on every page).
-  if (
-    pathname === "/login" ||
-    pathname.startsWith("/login/") ||
-    pathname === "/forgot-password" ||
-    pathname.startsWith("/forgot-password/")
-  ) {
-    return NextResponse.redirect(
-      new URL(mustChange ? "/change-password" : "/dashboard", request.url),
-    );
-  }
-
-  // /change-password requires a session (handled above) and is reachable both
-  // while mustChangePassword is set and for voluntary changes.
-  if (pathname.startsWith("/change-password")) {
-    return NextResponse.next();
-  }
-
-  // Force password change before anything else — dashboard, admin, everything.
-  if (mustChange) {
-    return NextResponse.redirect(new URL("/change-password", request.url));
-  }
-
-  // Onboarding gate (feature 02): users who never finished the 12-step wizard
-  // can only be on /onboarding; finished users (and super admins, who have no
-  // organization to onboard) are kept out of the wizard.
-  const onboardingDone =
-    isSuperAdmin || session.user.onboardingComplete === true;
-  if (pathname === "/onboarding" || pathname.startsWith("/onboarding/")) {
-    if (onboardingDone) {
-      return NextResponse.redirect(new URL("/dashboard", request.url));
+export default clerkMiddleware(
+  async (auth, request) => {
+    if (request.nextUrl.pathname.startsWith("/print")) return;
+    if (isPublicRoute(request)) return;
+    // Protected pages redirect to the sign-in page; the render tree performs
+    // the same check with auth() (defense in depth).
+    const { userId, redirectToSignIn } = await auth();
+    if (!userId) {
+      await redirectToSignIn();
     }
-    return NextResponse.next();
-  }
-  if (!onboardingDone) {
-    return NextResponse.redirect(new URL("/onboarding", request.url));
-  }
-
-  if (pathname === "/unauthorized") return NextResponse.next();
-
-  if (pathname.startsWith("/admin")) {
-    if (!isSuperAdmin) {
-      return NextResponse.redirect(new URL("/unauthorized", request.url));
-    }
-    return NextResponse.next();
-  }
-
-  return NextResponse.next();
-}
+  },
+  {
+    // Signed-out users hitting a protected page are sent here. Clerk's
+    // <SignIn /> lives at /login.
+    signInUrl: "/login",
+  },
+);
 
 export const config = {
-  // Excludes: API routes (their own 401s), static assets, health endpoint,
-  // and the internal print route (feature 06) — it authenticates with a
-  // signed short-lived token in its own handler, and redirecting the
-  // pdf-service fetch to /login would hand it a 200 login page instead of a
-  // renderable document.
+  // Excludes: API routes (their own auth: Clerk webhook signature or the
+  // signed print token), static assets, health endpoint, and the internal
+  // print route (feature 06).
   matcher: ["/((?!api|_next/static|_next/image|favicon.ico|health|robots.txt|print).*)"],
 };

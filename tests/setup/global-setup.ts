@@ -1,12 +1,14 @@
 // tests/setup/global-setup.ts
-// Vitest global setup: ensure the hermetic test database exists, point every
-// worker at it (process.env changes propagate to test workers), and apply
-// pending migrations with `prisma migrate deploy`.
+// Vitest global setup: point every worker at the test database named by
+// tests/test.env (process.env changes propagate to test workers) and apply the
+// current Drizzle schema to it.
+//
+// Change 6 replaced Prisma with Drizzle, so there is no `prisma migrate
+// deploy` anymore: `drizzle-kit push` applies src/db/schema.ts directly. The
+// schema is re-pushed before every run, which makes the suite self-healing —
+// a schema change only has to land in src/db/schema.ts to be picked up.
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { PrismaClient } from "@prisma/client";
 import { loadTestEnv } from "./env";
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -20,12 +22,39 @@ function databaseNameOf(url: string): string {
   return name;
 }
 
-function adminUrlFor(testUrl: string): string {
-  const url = new URL(testUrl);
-  url.pathname = "/postgres";
-  url.search = "";
-  return url.toString();
+/** Connects to the `postgres` maintenance database and creates the test
+ *  database when it is missing. The Neon serverless driver cannot run DDL
+ *  over the pooled endpoint on every plan, so this goes through `pg`. */
+async function ensureDatabase(testUrl: string, dbName: string): Promise<void> {
+  const { Pool } = await import("pg");
+  const adminUrl = new URL(testUrl);
+  adminUrl.pathname = "/postgres";
+  adminUrl.search = "";
+  const admin = new Pool({ connectionString: adminUrl.toString(), max: 1 });
+  try {
+    const found = await admin.query(
+      "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1) AS exists",
+      [dbName],
+    );
+    if (!found.rows[0]?.exists) {
+      await admin.query(`CREATE DATABASE "${dbName}"`);
+      console.log(`[test] created database ${dbName}`);
+    }
+  } finally {
+    await admin.end();
+  }
 }
+
+/** The env drizzle-kit needs just to load drizzle.config.ts (which imports
+ *  src/server/env.ts). Test env files carry the real values; the placeholders
+ *  here only satisfy the zod schema for the config module to parse. */
+const CONFIG_PLACEHOLDERS = {
+  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_placeholder",
+  CLERK_SECRET_KEY: "sk_test_placeholder",
+  INTERNAL_PDF_SECRET: "test-pdf-secret-at-least-32-characters",
+  BANK_ACCOUNT_ENCRYPTION_KEY: "test-bank-key-at-least-32-characters",
+  PDF_WORKER_ENABLED: "false",
+};
 
 export default async function globalSetup(): Promise<void> {
   const vars = loadTestEnv();
@@ -36,31 +65,28 @@ export default async function globalSetup(): Promise<void> {
   process.env.DATABASE_URL = testUrl;
 
   const dbName = databaseNameOf(testUrl);
-  const adminUrl = process.env.TEST_ADMIN_DATABASE_URL ?? adminUrlFor(testUrl);
+  await ensureDatabase(testUrl, dbName);
 
-  // 1. Create the test database when missing (admin connection to /postgres).
-  process.env.DATABASE_URL = adminUrl;
-  const admin = new PrismaClient();
-  try {
-    const found = await admin.$queryRaw<Array<{ exists: boolean }>>`
-      SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = ${dbName}) AS "exists"`;
-    if (!found[0]?.exists) {
-      await admin.$executeRawUnsafe(`CREATE DATABASE "${dbName}"`);
-      console.log(`[test] created database ${dbName}`);
-    }
-  } finally {
-    await admin.$disconnect();
-    process.env.DATABASE_URL = testUrl;
-  }
-
-  // 2. Apply schema migrations to the test database (idempotent).
-  const prismaCli = resolve(process.cwd(), "node_modules/prisma/build/index.js");
-  if (!existsSync(prismaCli)) {
-    throw new Error("Prisma CLI not found — run npm install first.");
-  }
-  execFileSync(process.execPath, [prismaCli, "migrate", "deploy"], {
+  // Apply the schema (idempotent). drizzle-kit runs in a child process so the
+  // main process keeps its own env untouched.
+  const drizzleKit = resolveDrizzleKit();
+  execFileSync(process.execPath, [drizzleKit, "push", "--force"], {
     cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: testUrl },
+    env: {
+      ...process.env,
+      ...CONFIG_PLACEHOLDERS,
+      DATABASE_URL: testUrl,
+    },
     stdio: "inherit",
   });
+}
+
+function resolveDrizzleKit(): string {
+  const { existsSync } = require("node:fs") as typeof import("node:fs");
+  const { resolve } = require("node:path") as typeof import("node:path");
+  const candidate = resolve(process.cwd(), "node_modules/drizzle-kit/bin.cjs");
+  if (!existsSync(candidate)) {
+    throw new Error("drizzle-kit not found — run npm install first.");
+  }
+  return candidate;
 }

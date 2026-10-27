@@ -51,7 +51,7 @@ Bangun dashboard user dan invoice list dengan server-side pagination/search/filt
 - [ ] Grafik tagihan vs pembayaran per bulan render, ada data (atau empty state jelas jika kosong).
 - [ ] Recent activity timeline menampilkan 5 event terbaru.
 - [ ] Invoice list: server-side pagination berfungsi (page 1 → 2, total record benar).
-- [ ] Search "Dharma" / nomor invoice men-filter list.
+- [ ] Search "Cipta" / nomor invoice men-filter list.
 - [ ] Filter status + jenis + customer + profile + tanggal range berfungsi secara kombinasi.
 - [ ] Sort per kolom (tanggal, grand total, nomor) berfungsi.
 - [ ] Row actions sesuai permission: VIEWER hanya preview/download; STAFF edit/issue/duplicate/mark sent/record payment; OWNER/ADMIN + cancel/revise.

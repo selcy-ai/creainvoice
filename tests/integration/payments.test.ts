@@ -33,8 +33,7 @@ import {
   listPayments,
   recordPayment,
 } from "@/modules/payments/service";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
 import {
   addMembership,
   createOrganization,
@@ -42,6 +41,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let owner: TestUser;
 let staff: TestUser;
@@ -66,18 +66,11 @@ const PDF_BYTES = Buffer.from(
   "latin1",
 );
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 
 const ownerCtx = (organizationId?: string) =>
-  ctxFor(organizationId ?? org.id, "OWNER", owner.id);
-const staffCtx = () => ctxFor(org.id, "STAFF", staff.id);
-const viewerCtx = () => ctxFor(org.id, "VIEWER", viewer.id);
+  ctxFor(organizationId ?? org.id, owner.id);
+const staffCtx = () => ctxFor(org.id, staff.id);
+const viewerCtx = () => ctxFor(org.id, viewer.id);
 
 async function expectAppFailure(
   promise: Promise<unknown>,
@@ -159,18 +152,18 @@ beforeAll(async () => {
   owner = await createUser({ username: "pay.owner" });
   staff = await createUser({ username: "pay.staff" });
   viewer = await createUser({ username: "pay.viewer" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Organisasi Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(staff.id, org.id, "STAFF");
   await addMembership(viewer.id, org.id, "VIEWER");
   await addMembership(owner.id, otherOrg.id, "OWNER");
 
-  const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
 
   await saveBankAccount(
-    { bankName: "Bank Uji", accountNumber: ACCOUNT_NUMBER, accountHolder: "PT Karya Nusantara" },
+    { bankName: "Bank Uji", accountNumber: ACCOUNT_NUMBER, accountHolder: "PT CreaInvoice Studio" },
     ownerCtx(),
   );
 
@@ -200,8 +193,8 @@ describe("record payment (Check When Done)", () => {
 
     const row = await db.invoice.findUnique({ where: { id: invoiceId } });
     expect(row!.status).toBe("PARTIALLY_PAID");
-    expect(row!.amountPaid.toFixed(2)).toBe("1000000.00");
-    expect(row!.remainingAfter.toFixed(2)).toBe("1250000.00");
+    expect(Number(row!.amountPaid).toFixed(2)).toBe("1000000.00");
+    expect(Number(row!.remainingAfter).toFixed(2)).toBe("1250000.00");
     // Snapshot immutability: the frozen calculation is untouched by payments.
     const calcSnap = row!.calculationSnapshot as { grandTotal: string } | null;
     expect(calcSnap).not.toBeNull();
@@ -274,7 +267,7 @@ describe("record payment (Check When Done)", () => {
     );
     const row = await db.invoice.findUnique({ where: { id: draft.id } });
     expect(row!.status).toBe("DRAFT");
-    expect(row!.amountPaid.toFixed(2)).toBe("0.00");
+    expect(Number(row!.amountPaid).toFixed(2)).toBe("0.00");
     expect(await db.payment.count({ where: { invoiceId: draft.id } })).toBe(0);
   });
 
@@ -365,8 +358,8 @@ describe("overpayment (Check When Done)", () => {
     expect(payment!.overpaymentReason).toBe("Pelunasan termasuk denda keterlambatan.");
     // The invoice never goes negative — the excess lives in amountPaid.
     const row = await db.invoice.findUnique({ where: { id } });
-    expect(row!.remainingAfter.toFixed(2)).toBe("0.00");
-    expect(row!.amountPaid.toFixed(2)).toBe("2500000.00");
+    expect(Number(row!.remainingAfter).toFixed(2)).toBe("0.00");
+    expect(Number(row!.amountPaid).toFixed(2)).toBe("2500000.00");
   });
 
   it("a normal payment needs no confirmation at all", async () => {
@@ -492,7 +485,7 @@ describe("delete payment / reversal (Check When Done)", () => {
     expect(back2.remainingAfter).toBe("2250000.00");
     const row = await db.invoice.findUnique({ where: { id } });
     expect(row!.status).toBe("ISSUED");
-    expect(row!.amountPaid.toFixed(2)).toBe("0.00");
+    expect(Number(row!.amountPaid).toFixed(2)).toBe("0.00");
   });
 
   it("answers 404 for a payment from another organization", async () => {
@@ -532,37 +525,35 @@ describe("delete payment / reversal (Check When Done)", () => {
 // ─── Permissions ─────────────────────────────────────────────────────────
 
 describe("permissions (Check When Done)", () => {
-  it("STAFF can record, VIEWER cannot; VIEWER can still read the riwayat", async () => {
+  it("flat workspace: every member records payments and reads the panel", async () => {
+    // Change 6: no role tiers — every verified member may record/reverse and
+    // sees the same permission flags (no viewer/staff split anymore).
     const id = await issueQuick();
     const byStaff = await recordPayment(id, paymentInput({ amount: "100000" }), staffCtx());
     expect(byStaff.status).toBe("PARTIALLY_PAID");
 
-    await expectAppFailure(
-      recordPayment(id, paymentInput({ amount: "100000" }), viewerCtx()),
-      "FORBIDDEN",
+    const byViewer = await recordPayment(
+      id,
+      paymentInput({ amount: "100000" }),
+      viewerCtx(),
     );
-    await expectAppFailure(deletePayment(byStaff.paymentId, viewerCtx()), "FORBIDDEN");
+    expect(byViewer.status).toBe("PARTIALLY_PAID");
 
-    // Read-only access: the panel renders for VIEWER with no write flags.
+    // The panel renders the same flags for every member of the workspace.
     const panel = await getInvoicePaymentPanel(id, viewerCtx());
-    expect(panel.rows).toHaveLength(1);
-    expect(panel.permissions.record).toBe(false);
-    expect(panel.permissions.reverse).toBe(false);
-    expect(panel.permissions.override).toBe(false);
-
-    const staffPanel = await getInvoicePaymentPanel(id, staffCtx());
-    expect(staffPanel.permissions.record).toBe(true);
-    expect(staffPanel.permissions.reverse).toBe(false);
-    expect(staffPanel.permissions.override).toBe(false);
+    expect(panel.rows.length).toBeGreaterThan(0);
+    expect(panel.permissions.record).toBe(true);
+    expect(panel.permissions.reverse).toBe(true);
+    expect(panel.permissions.override).toBe(true);
 
     const ownerPanel = await getInvoicePaymentPanel(id, ownerCtx());
+    expect(ownerPanel.permissions.record).toBe(true);
     expect(ownerPanel.permissions.reverse).toBe(true);
     expect(ownerPanel.permissions.override).toBe(true);
 
-    // VIEWER reads the org list too.
     const list = await listPayments(viewerCtx(), {});
     expect(list.rows.map((row) => row.id)).toContain(byStaff.paymentId);
-    await expectAppFailure(listPayableInvoices(viewerCtx()), "FORBIDDEN");
+    await deletePayment(byStaff.paymentId, viewerCtx());
   });
 });
 

@@ -22,7 +22,7 @@ import type { CustomerSnapshot } from "@/modules/invoices/snapshots";
 import type { BankAccountView } from "@/modules/bank-accounts/service";
 import type { SignerView } from "@/modules/signers/service";
 import { resolveNotesTokens } from "@/lib/tokens";
-import type { InvoiceType } from "@prisma/client";
+import type { InvoiceType } from "@/db/enums";
 
 export interface RendererParty {
   name: string | null;
@@ -148,16 +148,16 @@ export function rendererDataFromDraft(
     termNumber: draft.termNumber,
     customLabel: draft.customLabel,
     issuer: {
-      name: draft.profile.name,
-      legalName: draft.profile.legalName,
-      logoPath: draft.profile.logoPath,
-      address: draft.profile.address,
-      phone: draft.profile.phone,
-      whatsapp: draft.profile.whatsapp,
-      fax: draft.profile.fax,
-      email: draft.profile.email,
-      website: draft.profile.website,
-      taxId: draft.profile.taxId,
+      name: draft.profile?.name ?? "",
+      legalName: draft.profile?.legalName ?? null,
+      logoPath: draft.profile?.logoPath ?? null,
+      address: draft.profile?.address ?? null,
+      phone: draft.profile?.phone ?? null,
+      whatsapp: draft.profile?.whatsapp ?? null,
+      fax: draft.profile?.fax ?? null,
+      email: draft.profile?.email ?? null,
+      website: draft.profile?.website ?? null,
+      taxId: draft.profile?.taxId ?? null,
     },
     customer: draft.customer
       ? {
@@ -196,8 +196,8 @@ export function rendererDataFromDraft(
     notes: resolvedNotes.text,
     notesUnknownTokens: resolvedNotes.unknownTokens,
     footerText: draft.footerText,
-    settings: draft.profile.settings,
-    primaryColor: draft.profile.primaryColor,
+    settings: draft.profile?.settings ?? undefined,
+    primaryColor: draft.profile?.primaryColor ?? "#2563eb",
     currency: draft.currency,
   };
 }

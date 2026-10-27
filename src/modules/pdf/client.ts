@@ -12,6 +12,8 @@
 
 import { AppError } from "@/lib/errors";
 import { db } from "@/server/db";
+import { customers, invoices } from "@/db/schema";
+import { eq } from "drizzle-orm";
 import { env } from "@/server/env";
 import { logger } from "@/server/logger";
 import { signPdfToken, PDF_TOKEN_TTL_MS, type RenderTokenPayload } from "@/modules/pdf/token";
@@ -71,20 +73,23 @@ interface IssuerSnapshotShape {
  * scope verified against the row: a foreign id answers 404, never a render).
  */
 export async function requestRender(invoiceId: string): Promise<RenderMetadata> {
-  const invoice = await db.invoice.findUnique({
-    where: { id: invoiceId },
-    select: {
-      id: true,
-      organizationId: true,
-      number: true,
-      status: true,
-      invoiceDate: true,
-      referenceType: true,
-      referenceNumber: true,
-      issuerSnapshot: true,
-      customer: { select: { companyName: true } },
-    },
-  });
+  const rows = await db
+    .select({
+      id: invoices.id,
+      organizationId: invoices.organizationId,
+      number: invoices.number,
+      status: invoices.status,
+      invoiceDate: invoices.invoiceDate,
+      referenceType: invoices.referenceType,
+      referenceNumber: invoices.referenceNumber,
+      issuerSnapshot: invoices.issuerSnapshot,
+      customerCompany: customers.companyName,
+    })
+    .from(invoices)
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  const invoice = rows[0];
   if (!invoice) {
     throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
   }
@@ -93,7 +98,7 @@ export async function requestRender(invoiceId: string): Promise<RenderMetadata> 
   }
 
   const issuer = (invoice.issuerSnapshot ?? {}) as IssuerSnapshotShape;
-  const issuerName = issuer.name?.trim() || "invoice-me";
+  const issuerName = issuer.name?.trim() || "creainvoice";
 
   const filename = safePdfFilename(invoice.id, invoice.number);
   const year = invoice.invoiceDate.getUTCFullYear();
@@ -116,7 +121,7 @@ export async function requestRender(invoiceId: string): Promise<RenderMetadata> 
     footer: invoicePdfFooter({
       referenceType: invoice.referenceType,
       referenceNumber: invoice.referenceNumber,
-      customerName: invoice.customer?.companyName ?? null,
+      customerName: invoice.customerCompany ?? null,
       issuerName,
     }),
     title: invoice.number,

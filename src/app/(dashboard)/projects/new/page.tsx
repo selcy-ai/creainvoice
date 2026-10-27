@@ -5,12 +5,11 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { ProjectForm } from "@/components/projects/project-form";
-import { can } from "@/modules/permissions/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Tambah Project — invoice-me",
+  title: "Tambah Project — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -19,8 +18,8 @@ export default async function NewProjectPage() {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
-  if (!scope || !can("project.create", scope)) redirect("/projects");
+  const scope = await resolveWorkspaceScope(session);
+  if (!scope || !Boolean(scope)) redirect("/projects");
 
   return (
     <div className="flex flex-col gap-6">

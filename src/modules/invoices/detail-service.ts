@@ -16,8 +16,20 @@
 import { AppError } from "@/lib/errors";
 import { logger } from "@/server/logger";
 import { db } from "@/server/db";
+import {
+  bankAccounts,
+  customerContacts,
+  customers,
+  invoiceItems,
+  invoiceProfiles,
+  invoices,
+  projectReferences,
+  signers,
+  users,
+} from "@/db/schema";
+import { and, asc, eq } from "drizzle-orm";
 import { toCalendarInput } from "@/lib/date";
-import { assertCan, can, requireOrgScope } from "@/modules/permissions/service";
+import { assertCan, can, requireOrgScope } from "@/modules/workspace/permissions";
 import { calcFromRows, type InvoiceServiceContext, type InvoiceWithRelations } from "@/modules/invoices/service";
 import {
   CANCELABLE_STATUSES,
@@ -38,15 +50,7 @@ import { getOfficialPdf, getPdfJob, type OfficialPdfView, type PdfJobView } from
 import { toBankAccountView } from "@/modules/bank-accounts/service";
 import { resolveNotesTokens } from "@/lib/tokens";
 import type { InvoiceCalcResult } from "@/modules/invoices/calculation";
-import type {
-  BillingMode,
-  InvoiceStatus,
-  InvoiceType,
-  Prisma,
-  ReferenceType,
-  StampMode,
-  TaxMode,
-} from "@prisma/client";
+import type { BillingMode, InvoiceStatus, InvoiceType, ReferenceType, StampMode, TaxMode } from "@/db/enums";
 
 export interface InvoiceDetailItem {
   id: string;
@@ -179,21 +183,26 @@ export interface InvoiceDetailView {
   updatedAt: string;
 }
 
-const detailInclude = {
-  profile: true,
-  customer: true,
-  customerContact: true,
-  projectReference: { select: { id: true, title: true, referenceNumber: true } },
-  bankAccount: true,
-  signer: true,
-  items: { orderBy: { position: "asc" as const } },
-  issuedBy: { select: { id: true, name: true, username: true } },
-  revisedFrom: { select: { id: true, number: true, numberPreview: true, status: true } },
-  replacedBy: { select: { id: true, number: true, numberPreview: true, status: true } },
-} satisfies Prisma.InvoiceInclude;
-
-type DetailRow = Prisma.InvoiceGetPayload<{ include: typeof detailInclude }> &
-  InvoiceWithRelations;
+/** One invoice with every relation the detail page renders (Drizzle LEFT
+ *  JOINs — a draft may legitimately have no bank/signer/PIC, so they stay
+ *  nullable and the view code treats them so). */
+interface DetailRow extends InvoiceWithRelations {
+  bankAccount: typeof bankAccounts.$inferSelect | null;
+  signer: typeof signers.$inferSelect | null;
+  issuedBy: { id: string; name: string | null; username: string | null } | null;
+  revisedFrom: {
+    id: string;
+    number: string | null;
+    numberPreview: string | null;
+    status: InvoiceStatus;
+  } | null;
+  replacedBy: {
+    id: string;
+    number: string | null;
+    numberPreview: string | null;
+    status: InvoiceStatus;
+  } | null;
+}
 
 function toLink(
   row: { id: string; number: string | null; numberPreview: string | null; status: InvoiceStatus } | null,
@@ -209,16 +218,106 @@ export async function getInvoiceDetail(
   assertCan("invoice.view", ctx.scope);
   requireOrgScope(ctx.scope);
 
-  const invoice = (await db.invoice.findUnique({
-    where: { id: invoiceId },
-    include: detailInclude,
-  })) as DetailRow | null;
-  if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
+  const joined = await db
+    .select({
+      invoice: invoices,
+      profile: invoiceProfiles,
+      customer: customers,
+      customerContact: customerContacts,
+      project: projectReferences,
+      bankAccount: bankAccounts,
+      signer: signers,
+      issuedBy: users,
+    })
+    .from(invoices)
+    .leftJoin(invoiceProfiles, eq(invoiceProfiles.id, invoices.profileId))
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .leftJoin(customerContacts, eq(customerContacts.id, invoices.customerContactId))
+    .leftJoin(projectReferences, eq(projectReferences.id, invoices.projectReferenceId))
+    .leftJoin(bankAccounts, eq(bankAccounts.id, invoices.bankAccountId))
+    .leftJoin(signers, eq(signers.id, invoices.signerId))
+    .leftJoin(users, eq(users.id, invoices.issuedById))
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  const first = joined[0];
+  if (!first) {
+    throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
+  }
+  const root = first.invoice;
+  // Self-references are fetched separately — a self-join confuses both ORMs
+  // and adds nothing for a single-row read.
+  const [revisedFromRows, replacedByRows, itemRows] = await Promise.all([
+    root.revisedFromId
+      ? db
+          .select({
+            id: invoices.id,
+            number: invoices.number,
+            numberPreview: invoices.numberPreview,
+            status: invoices.status,
+          })
+          .from(invoices)
+          .where(eq(invoices.id, root.revisedFromId))
+          .limit(1)
+      : [],
+    root.replacedById
+      ? db
+          .select({
+            id: invoices.id,
+            number: invoices.number,
+            numberPreview: invoices.numberPreview,
+            status: invoices.status,
+          })
+          .from(invoices)
+          .where(eq(invoices.id, root.replacedById))
+          .limit(1)
+      : [],
+    db
+      .select()
+      .from(invoiceItems)
+      .where(eq(invoiceItems.invoiceId, invoiceId))
+      .orderBy(asc(invoiceItems.position)),
+  ]);
+  const invoice: DetailRow = {
+    ...root,
+    profile: first.profile,
+    customer: first.customer,
+    customerContact: first.customerContact
+      ? {
+          id: first.customerContact.id,
+          name: first.customerContact.name,
+          title: first.customerContact.title,
+          division: first.customerContact.division,
+        }
+      : null,
+    projectReference: first.project
+      ? {
+          id: first.project.id,
+          title: first.project.title,
+          referenceNumber: first.project.referenceNumber,
+        }
+      : null,
+    bankAccount: first.bankAccount,
+    signer: first.signer,
+    items: itemRows,
+    issuedBy: first.issuedBy
+      ? {
+          id: first.issuedBy.id,
+          name: first.issuedBy.name,
+          username: first.issuedBy.username,
+        }
+      : null,
+    revisedFrom: revisedFromRows[0] ?? null,
+    replacedBy: replacedByRows[0] ?? null,
+  };
+  if (invoice.organizationId !== ctx.scope.organizationId) {
     // IDOR guard: a foreign invoice id answers 404.
     throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
   }
 
   const isDraft = invoice.status === "DRAFT";
+  if (!invoice.profile) {
+    throw new AppError("NOT_FOUND", "Profil invoice tidak ditemukan.");
+  }
   const liveIssuer: InvoiceDetailParty = {
     name: invoice.profile.name,
     legalName: invoice.profile.legalName,
@@ -352,11 +451,11 @@ export async function getInvoiceDetail(
     position: item.position,
     description: item.description,
     details: item.details,
-    quantity: item.quantity.toString(),
+    quantity: item.quantity,
     unit: item.unit,
-    unitPrice: item.unitPrice.toString(),
-    discountAmount: item.discountAmount.toString(),
-    lineAmount: item.lineAmount.toString(),
+    unitPrice: item.unitPrice,
+    discountAmount: item.discountAmount,
+    lineAmount: item.lineAmount,
   }));
 
   const calc: InvoiceCalcResult = calcSnap ? calcSnap.calc : calcFromRows(invoice);

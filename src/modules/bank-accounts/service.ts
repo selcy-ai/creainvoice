@@ -13,7 +13,8 @@
 
 import { log } from "@/modules/audit/service";
 import { AppError } from "@/lib/errors";
-import { assertCan, can } from "@/modules/permissions/service";
+import type { WorkspaceScope } from "@/modules/workspace/service";
+import { assertCan, can } from "@/modules/workspace/permissions";
 import {
   accountNumberLast4,
   decryptAccountNumber,
@@ -22,8 +23,11 @@ import {
   normalizeAccountNumber,
 } from "@/modules/bank-accounts/crypto";
 import { BANK_ACCOUNTS_PAGE_SIZE, type BankAccountInput } from "@/modules/bank-accounts/schema";
-import { db } from "@/server/db";
-import type { BankAccount, OrganizationRole, Prisma } from "@prisma/client";
+import { db, type Database } from "@/server/db";
+import { bankAccounts, invoiceProfiles } from "@/db/schema";
+import { and, asc, count, desc, eq, isNotNull, ne } from "drizzle-orm";
+
+type BankAccount = typeof bankAccounts.$inferSelect;
 
 export { maskAccountNumber, normalizeAccountNumber } from "@/modules/bank-accounts/crypto";
 // The schema lives in the client-safe module (feature 07 rule); re-exported
@@ -31,7 +35,7 @@ export { maskAccountNumber, normalizeAccountNumber } from "@/modules/bank-accoun
 export { bankAccountSchema, type BankAccountFormValues, type BankAccountInput } from "@/modules/bank-accounts/schema";
 
 export interface BankAccountServiceContext {
-  scope: { organizationId: string; role: OrganizationRole; userId: string };
+  scope: WorkspaceScope;
   request?: Request | null;
 }
 
@@ -82,18 +86,28 @@ export function fullAccountNumber(account: BankAccount): string {
 export async function getDefaultBankAccount(
   organizationId: string,
 ): Promise<BankAccount | null> {
-  return db.bankAccount.findFirst({
-    where: { organizationId, isDefault: true, isActive: true },
-    orderBy: { createdAt: "asc" },
-  });
+  const rows = await db
+    .select()
+    .from(bankAccounts)
+    .where(
+      and(
+        eq(bankAccounts.organizationId, organizationId),
+        eq(bankAccounts.isDefault, true),
+        eq(bankAccounts.isActive, true),
+      ),
+    )
+    .orderBy(asc(bankAccounts.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /** Active accounts only — the invoice editor's dropdown (masked view). */
 export async function listBankAccounts(organizationId: string): Promise<BankAccountView[]> {
-  const rows = await db.bankAccount.findMany({
-    where: { organizationId, isActive: true },
-    orderBy: { createdAt: "asc" },
-  });
+  const rows = await db
+    .select()
+    .from(bankAccounts)
+    .where(and(eq(bankAccounts.organizationId, organizationId), eq(bankAccounts.isActive, true)))
+    .orderBy(asc(bankAccounts.createdAt));
   return rows.map(toBankAccountView);
 }
 
@@ -110,16 +124,18 @@ export async function listBankAccountsPage(
 }> {
   assertCan("bankAccount.view", ctx.scope);
   const pageSize = BANK_ACCOUNTS_PAGE_SIZE;
-  const where = { organizationId: ctx.scope.organizationId };
-  const total = await db.bankAccount.count({ where });
+  const where = eq(bankAccounts.organizationId, ctx.scope.organizationId);
+  const totalRows = await db.select({ value: count() }).from(bankAccounts).where(where);
+  const total = Number(totalRows[0]?.value ?? 0);
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Math.max(1, options.page ?? 1), pageCount);
-  const rows = await db.bankAccount.findMany({
-    where,
-    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }, { id: "asc" }],
-    skip: (page - 1) * pageSize,
-    take: pageSize,
-  });
+  const rows = await db
+    .select()
+    .from(bankAccounts)
+    .where(where)
+    .orderBy(desc(bankAccounts.isDefault), asc(bankAccounts.createdAt), asc(bankAccounts.id))
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
   return { rows: rows.map(toBankAccountView), total, page, pageSize, pageCount };
 }
 
@@ -134,9 +150,14 @@ export async function getBankAccountDetail(
   ctx: BankAccountServiceContext,
 ): Promise<BankAccountDetail> {
   assertCan("bankAccount.view", ctx.scope);
-  const row = await db.bankAccount.findFirst({
-    where: { id, organizationId: ctx.scope.organizationId },
-  });
+  const rows = await db
+    .select()
+    .from(bankAccounts)
+    .where(
+      and(eq(bankAccounts.id, id), eq(bankAccounts.organizationId, ctx.scope.organizationId)),
+    )
+    .limit(1);
+  const row = rows[0];
   if (!row) throw new AppError("NOT_FOUND", "Rekening bank tidak ditemukan.");
   const mayReveal = can("bankAccount.update", ctx.scope);
   return {
@@ -161,30 +182,40 @@ function assertDigits(digits: string): void {
  * prefills from `InvoiceProfile.defaultBankAccountId`, and with one profile per
  * organisation — recorded feature-08 decision — the two must not drift). */
 async function pointProfilesAtBank(
-  tx: Prisma.TransactionClient,
+  client: Pick<Database, "update">,
   organizationId: string,
   bankAccountId: string | null,
   onlyProfilesPointingAt?: string,
 ): Promise<void> {
-  await tx.invoiceProfile.updateMany({
-    where: {
-      organizationId,
-      ...(onlyProfilesPointingAt ? { defaultBankAccountId: onlyProfilesPointingAt } : {}),
-    },
-    data: { defaultBankAccountId: bankAccountId },
-  });
+  await client
+    .update(invoiceProfiles)
+    .set({ defaultBankAccountId: bankAccountId })
+    .where(
+      and(
+        eq(invoiceProfiles.organizationId, organizationId),
+        onlyProfilesPointingAt
+          ? eq(invoiceProfiles.defaultBankAccountId, onlyProfilesPointingAt)
+          : isNotNull(invoiceProfiles.id),
+      ),
+    );
 }
 
 /** Becoming the default clears the flag on every other account of the org. */
 async function clearOtherDefaults(
-  tx: Prisma.TransactionClient,
+  client: Pick<Database, "update">,
   organizationId: string,
   keepId: string,
 ): Promise<void> {
-  await tx.bankAccount.updateMany({
-    where: { organizationId, isDefault: true, id: { not: keepId } },
-    data: { isDefault: false },
-  });
+  await client
+    .update(bankAccounts)
+    .set({ isDefault: false })
+    .where(
+      and(
+        eq(bankAccounts.organizationId, organizationId),
+        eq(bankAccounts.isDefault, true),
+        ne(bankAccounts.id, keepId),
+      ),
+    );
 }
 
 export async function createBankAccount(
@@ -199,23 +230,30 @@ export async function createBankAccount(
   }
 
   const organizationId = ctx.scope.organizationId;
-  const hasDefault = await db.bankAccount.findFirst({
-    where: { organizationId, isDefault: true },
-    select: { id: true },
-  });
+  const defaultRows = await db
+    .select({ id: bankAccounts.id })
+    .from(bankAccounts)
+    .where(
+      and(eq(bankAccounts.organizationId, organizationId), eq(bankAccounts.isDefault, true)),
+    )
+    .limit(1);
   // First account is always the default; afterwards the checkbox decides.
-  const makeDefault = input.isDefault === true || hasDefault === null;
+  const makeDefault = input.isDefault === true || defaultRows.length === 0;
 
-  const account = await db.$transaction(async (tx) => {
+  let account: BankAccount | undefined;
+  await db.transaction(async (tx) => {
     // Row does not exist yet, so clearing "the default" clears every row.
     if (makeDefault) {
-      await tx.bankAccount.updateMany({
-        where: { organizationId, isDefault: true },
-        data: { isDefault: false },
-      });
+      await tx
+        .update(bankAccounts)
+        .set({ isDefault: false })
+        .where(
+          and(eq(bankAccounts.organizationId, organizationId), eq(bankAccounts.isDefault, true)),
+        );
     }
-    const created = await tx.bankAccount.create({
-      data: {
+    const created = await tx
+      .insert(bankAccounts)
+      .values({
         organizationId,
         bankName: input.bankName,
         bankCode: input.bankCode ?? null,
@@ -226,11 +264,13 @@ export async function createBankAccount(
         currency: "IDR",
         isDefault: makeDefault,
         isActive: input.isActive ?? true,
-      },
-    });
-    if (makeDefault) await pointProfilesAtBank(tx, organizationId, created.id);
-    return created;
+      })
+      .returning();
+    account = created[0];
+    if (account && makeDefault) await pointProfilesAtBank(tx, organizationId, account.id);
   });
+  if (!account) throw new AppError("INTERNAL_ERROR", "Rekening gagal dibuat.");
+  const created = account;
 
   // Audit metadata never carries the number — only non-sensitive identifiers.
   await log({
@@ -238,8 +278,8 @@ export async function createBankAccount(
     organizationId,
     action: "PROFILE_CHANGED",
     entityType: "bankAccount",
-    entityId: account.id,
-    metadata: { change: "created", bankName: account.bankName, isDefault: makeDefault },
+    entityId: created.id,
+    metadata: { change: "created", bankName: created.bankName, isDefault: makeDefault },
     request: ctx.request ?? null,
   });
   return account;
@@ -252,7 +292,12 @@ export async function updateBankAccount(
 ): Promise<BankAccount> {
   assertCan("bankAccount.update", ctx.scope);
   const organizationId = ctx.scope.organizationId;
-  const existing = await db.bankAccount.findFirst({ where: { id, organizationId } });
+  const existingRows = await db
+    .select()
+    .from(bankAccounts)
+    .where(and(eq(bankAccounts.id, id), eq(bankAccounts.organizationId, organizationId)))
+    .limit(1);
+  const existing = existingRows[0];
   if (!existing) throw new AppError("NOT_FOUND", "Rekening bank tidak ditemukan.");
 
   const digits = digitsOf(input.accountNumber);
@@ -264,11 +309,12 @@ export async function updateBankAccount(
   const becameDefault = wantDefault && !existing.isDefault;
   const unsetDefault = !wantDefault && existing.isDefault;
 
-  const account = await db.$transaction(async (tx) => {
+  let account: BankAccount | undefined;
+  await db.transaction(async (tx) => {
     if (becameDefault) await clearOtherDefaults(tx, organizationId, id);
-    const updated = await tx.bankAccount.update({
-      where: { id: existing.id },
-      data: {
+    const updated = await tx
+      .update(bankAccounts)
+      .set({
         bankName: input.bankName,
         bankCode: input.bankCode ?? null,
         // Empty number on edit keeps the stored ciphertext: the plaintext is
@@ -283,25 +329,28 @@ export async function updateBankAccount(
         branch: input.branch ?? null,
         isActive: input.isActive ?? existing.isActive,
         isDefault: wantDefault,
-      },
-    });
-    if (becameDefault) await pointProfilesAtBank(tx, organizationId, id);
-    if (unsetDefault) {
+      })
+      .where(eq(bankAccounts.id, existing.id))
+      .returning();
+    account = updated[0];
+    if (account && becameDefault) await pointProfilesAtBank(tx, organizationId, id);
+    if (account && unsetDefault) {
       await pointProfilesAtBank(tx, organizationId, null, id);
     }
-    return updated;
   });
+  if (!account) throw new AppError("INTERNAL_ERROR", "Rekening gagal diperbarui.");
+  const updatedRow = account;
 
   await log({
     actorUserId: ctx.scope.userId,
     organizationId,
     action: "PROFILE_CHANGED",
     entityType: "bankAccount",
-    entityId: account.id,
+    entityId: updatedRow.id,
     metadata: {
       change: becameDefault || unsetDefault ? "defaultChanged" : "updated",
-      bankName: account.bankName,
-      isDefault: account.isDefault,
+      bankName: updatedRow.bankName,
+      isDefault: updatedRow.isDefault,
     },
     request: ctx.request ?? null,
   });
@@ -315,27 +364,36 @@ export async function setDefaultBankAccount(
 ): Promise<BankAccount> {
   assertCan("bankAccount.update", ctx.scope);
   const organizationId = ctx.scope.organizationId;
-  const existing = await db.bankAccount.findFirst({ where: { id, organizationId } });
+  const existingRows = await db
+    .select()
+    .from(bankAccounts)
+    .where(and(eq(bankAccounts.id, id), eq(bankAccounts.organizationId, organizationId)))
+    .limit(1);
+  const existing = existingRows[0];
   if (!existing) throw new AppError("NOT_FOUND", "Rekening bank tidak ditemukan.");
   if (existing.isDefault) return existing;
 
-  const account = await db.$transaction(async (tx) => {
+  let account: BankAccount | undefined;
+  await db.transaction(async (tx) => {
     await clearOtherDefaults(tx, organizationId, id);
-    const updated = await tx.bankAccount.update({
-      where: { id: existing.id },
-      data: { isDefault: true },
-    });
-    await pointProfilesAtBank(tx, organizationId, id);
-    return updated;
+    const updated = await tx
+      .update(bankAccounts)
+      .set({ isDefault: true })
+      .where(eq(bankAccounts.id, existing.id))
+      .returning();
+    account = updated[0];
+    if (account) await pointProfilesAtBank(tx, organizationId, account.id);
   });
+  if (!account) throw new AppError("INTERNAL_ERROR", "Rekening gagal diubah.");
+  const setDefault = account;
 
   await log({
     actorUserId: ctx.scope.userId,
     organizationId,
     action: "PROFILE_CHANGED",
     entityType: "bankAccount",
-    entityId: account.id,
-    metadata: { change: "defaultChanged", bankName: account.bankName, isDefault: true },
+    entityId: setDefault.id,
+    metadata: { change: "defaultChanged", bankName: setDefault.bankName, isDefault: true },
     request: ctx.request ?? null,
   });
   return account;
@@ -353,10 +411,15 @@ export async function deleteBankAccount(
 ): Promise<void> {
   assertCan("bankAccount.delete", ctx.scope);
   const organizationId = ctx.scope.organizationId;
-  const existing = await db.bankAccount.findFirst({ where: { id, organizationId } });
+  const existingRows = await db
+    .select()
+    .from(bankAccounts)
+    .where(and(eq(bankAccounts.id, id), eq(bankAccounts.organizationId, organizationId)))
+    .limit(1);
+  const existing = existingRows[0];
   if (!existing) throw new AppError("NOT_FOUND", "Rekening bank tidak ditemukan.");
 
-  await db.bankAccount.delete({ where: { id: existing.id } });
+  await db.delete(bankAccounts).where(eq(bankAccounts.id, existing.id));
 
   await log({
     actorUserId: ctx.scope.userId,
@@ -398,44 +461,59 @@ export async function saveBankAccount(
     throw new AppError("VALIDATION_ERROR", "Nomor rekening wajib diisi.");
   }
 
-  const account = existing
-    ? await db.bankAccount.update({
-        where: { id: existing.id },
-        data: {
-          bankName: input.bankName,
-          bankCode: input.bankCode ?? null,
-          accountNumberEncrypted: encrypted,
-          accountNumberLast4: last4,
-          accountHolder: input.accountHolder,
-          branch: input.branch ?? null,
-        },
+  let account: BankAccount | undefined;
+  if (existing) {
+    const updated = await db
+      .update(bankAccounts)
+      .set({
+        bankName: input.bankName,
+        bankCode: input.bankCode ?? null,
+        accountNumberEncrypted: encrypted,
+        accountNumberLast4: last4,
+        accountHolder: input.accountHolder,
+        branch: input.branch ?? null,
       })
-    : await db.bankAccount.create({
-        data: {
-          organizationId: ctx.scope.organizationId,
-          bankName: input.bankName,
-          bankCode: input.bankCode ?? null,
-          accountNumberEncrypted: encrypted,
-          accountNumberLast4: last4,
-          accountHolder: input.accountHolder,
-          branch: input.branch ?? null,
-          currency: "IDR",
-          isDefault: true,
-          isActive: true,
-        },
-      });
+      .where(eq(bankAccounts.id, existing.id))
+      .returning();
+    account = updated[0];
+  } else {
+    const created = await db
+      .insert(bankAccounts)
+      .values({
+        organizationId: ctx.scope.organizationId,
+        bankName: input.bankName,
+        bankCode: input.bankCode ?? null,
+        accountNumberEncrypted: encrypted,
+        accountNumberLast4: last4,
+        accountHolder: input.accountHolder,
+        branch: input.branch ?? null,
+        currency: "IDR",
+        isDefault: true,
+        isActive: true,
+      })
+      .returning();
+    account = created[0];
+  }
+  if (!account) throw new AppError("INTERNAL_ERROR", "Rekening gagal disimpan.");
+  const saved = account;
 
   // Link as the profile's default payment account when a profile exists yet
   // (onboarding step 6 runs after step 2, so this normally holds).
-  const profile = await db.invoiceProfile.findFirst({
-    where: { organizationId: ctx.scope.organizationId, isActive: true },
-    select: { id: true },
-  });
-  if (profile) {
-    await db.invoiceProfile.update({
-      where: { id: profile.id },
-      data: { defaultBankAccountId: account.id },
-    });
+  const profileRows = await db
+    .select({ id: invoiceProfiles.id })
+    .from(invoiceProfiles)
+    .where(
+      and(
+        eq(invoiceProfiles.organizationId, ctx.scope.organizationId),
+        eq(invoiceProfiles.isActive, true),
+      ),
+    )
+    .limit(1);
+  if (profileRows[0]) {
+    await db
+      .update(invoiceProfiles)
+      .set({ defaultBankAccountId: saved.id })
+      .where(eq(invoiceProfiles.id, profileRows[0].id));
   }
 
   await log({
@@ -443,10 +521,10 @@ export async function saveBankAccount(
     organizationId: ctx.scope.organizationId,
     action: "PROFILE_CHANGED",
     entityType: "bankAccount",
-    entityId: account.id,
+    entityId: saved.id,
     metadata: {
       change: existing ? "updated" : "created",
-      bankName: account.bankName,
+      bankName: saved.bankName,
       isDefault: true,
     },
     request: ctx.request ?? null,

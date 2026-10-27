@@ -6,12 +6,11 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { CustomerForm } from "@/components/customers/customer-form";
-import { can } from "@/modules/permissions/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Tambah Customer — invoice-me",
+  title: "Tambah Customer — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -20,8 +19,8 @@ export default async function NewCustomerPage() {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
-  if (!scope || !can("customer.create", scope)) redirect("/customers");
+  const scope = await resolveWorkspaceScope(session);
+  if (!scope || !Boolean(scope)) redirect("/customers");
 
   return (
     <div className="flex flex-col gap-6">

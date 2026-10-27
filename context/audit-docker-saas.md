@@ -1,4 +1,4 @@
-# invoice-me — audit docker & arsitektur SaaS
+# creainvoice — audit docker & arsitektur SaaS ( historis, era Coolify/Docker )
 
 Tanggal: 2026-10-22 (orchestrator, sesi fresh)
 
@@ -17,14 +17,14 @@ Tanggal: 2026-10-22 (orchestrator, sesi fresh)
 - env validation: ✅ ADA (`src/server/env.ts`, zod, fail-fast). Saya koreksi klaim awal saya — validation bagus.
 - Public registration: ✅ MATI (`src/server/auth.ts:62`). Super admin membuat user. Jadi `signUp` tidak terbuka.
 
-## 2. Jejak "Sigit Berkarya" (30 file)
+## 2. Jejak data personal lama (30 file)
 
-- **Sumber tunggal**: `prisma/seed.mjs` (org SB, profil Yogyakarta WA 0851 5688 8959, bank Mandiri 1370021873449, customer PT Dharma Polimetal Tbk PO 5198021181, invoice INV/SB/VII/2026/001)
+- **Sumber tunggal**: `prisma/seed.mjs` (org demo, profil demo, bank demo, customer demo PO 5198021181, invoice INV/SB/VII/2026/001)
 - **26 file test** — mayoritas hanya fixture data uji (hardcode nama sebagai data pengujian)
-- README.md (Dharma Polimetal + PO di contoh), 2 comment di docker-entrypoint.sh, context/*.md (spek lama)
+- README.md ( customer demo + PO di contoh ), 2 comment di docker-entrypoint.sh, context/*.md ( spek lama )
 - No WA **tidak** tersebar di src/ — hanya seed.mjs + spek
 
-**Implikasi**: ini masalah **seed/demo data**, bukan branding yang terbakar ke kode. Untuk SaaS: ganti seed jadi **org + profil kosong**, user onboarding sendiri lewat wizard 12-langkah yang sudah ada. Test file bisa dibiarkan (data uji) atau di-neutralisir ke "Org Demo"/"PT Contoh Sejahtera".
+**Implikasi**: ini masalah **seed/demo data**, bukan branding yang terbakar ke kode. Untuk SaaS: ganti seed jadi **org + profil kosong**, user onboarding sendiri lewat wizard 12-langkah yang sudah ada. Test file bisa dibiarkan (data uji) atau di-neutralisir ke persona fiktif ( Change 6 : CreaInvoice Studio / PT Cipta Karya Nusantara / Andi Wijaya ).
 
 ## 3. Penilaian modul (LOC non-test)
 
@@ -74,16 +74,16 @@ Tanggal: 2026-10-22 (orchestrator, sesi fresh)
 3. `docker builder prune -af` + `docker image prune -f` → **rebut 4,37 GB**
 4. Hapus deperti: `node:22-bookworm` (1,64 GB), `strix-sandbox` (5,9 GB), `hello-world`, `alpine:3.19`, `supabase edge-runtime` (1,14 GB) bila tidak dipakai project lain
 
-### Tier 2 — hilangkan "Sigit Berkarya" — **DIEKSEKUSI 2026-10-23**
+### Tier 2 — hilangkan data personal dari seed & fixture — **DIEKSEKUSI 2026-10-23**, lalu diganti total persona netral di Change 6
 
 **Hasil:**
-- ✅ Nama "Sigit Berkarya" (26 file, 126 replacement) → org seed **"Karya Nusantara"** (slug `karya-nusantara`)
-- ✅ Varian: `Sigit Wicaksono` → `Budi Santoso` (signer fixture), `Sigit` → `Budi`, `Sigit Lain` → `Org Lain`, `sigit-berkarya` → `karya-nusantara`, `seed_signer_sigit` → `seed_signer_budi`
-- ✅ Data pribadi dinetralkan: WA `0851 5688 8959` → `0812 3456 7890`, bank `1370021873449` → `1234567890123` (last4 `3449` → `0123`), alamat `Jl. Kaliurang KM 5, Yogyakarta` → `Jl. Sudirman No. 1, Jakarta`
-- ✅ Docstring `deriveProfileCode`: `"Karya Nusantara" → "SIGIT"` (stale) diperbaiki ke `KARYAN` (terverifikasi: `node -e` menghasilkan KARYAN)
-- ✅ Fix 1 test akibat rename: `pdf-render.test.ts:526` expects `"Budi"` → `"Karya Nusantara"` (nama signer fixture berubah)
-- ✅ Placeholder UI: `step-01-workspace.tsx` "mis. Sigit Berkarya" → "mis. Karya Nusantara", `signer-form.tsx` "mis. Sigit Wicaksono" → "mis. Budi Santoso"
-- ❌ TIDAK disentuh: `context/` (spec bundle = contract), invoice number contract `INV/SB/VII/2026/001` dan profile code `SB` (dipertahankan agar 700+ test tidak meledak — keputusan disetujui user)
+- ✅ Nama personal lama (26 file, 126 replacement) → org seed netral ( slug `karya-nusantara` ), lalu Change 6 mengganti seluruhnya menjadi persona fiktif **CreaInvoice Studio**
+- ✅ Varian: signer fixture diganti nama netral, slug org menjadi `creainvoice-studio`, id fixture menjadi `seed_signer_andi` ( Change 6 )
+- ✅ Data pribadi dinetralkan: nomor WA, nomor rekening, dan alamat diganti nilai demo ( Change 6 menggunakan nilai demo CreaInvoice Studio )
+- ✅ Docstring `deriveProfileCode` diperbaiki ke `KARYAN` ( terverifikasi: `node -e` menghasilkan KARYAN )
+- ✅ Fix 1 test akibat rename: `pdf-render.test.ts:526` expects nama signer fixture baru ( nama signer demo berubah )
+- ✅ Placeholder UI `step-01-workspace.tsx` & `signer-form.tsx` memakai persona netral Change 6
+- ❌ TIDAK disentuh saat itu: `context/` ( spec bundle = contract ) — Change 6 kemudian mengganti nama di context/* juga; invoice number contract `INV/SB/VII/2026/001` dan profile code `SB` dipertahankan agar 700+ test tidak meledak ( keputusan disetujui user )
 
 **Verifikasi:**
 - `tsc --noEmit` → 0 error
@@ -91,7 +91,7 @@ Tanggal: 2026-10-22 (orchestrator, sesi fresh)
 - vitest `src/` → **411/411 (34 files)**
 - vitest `tests/integration/` → **281/281 (19 files)**
 - `next build` → PASS
-- grep `Sigit|sigit|Berkarya|0851 5688|1370021873449|Kaliurang` di luar `context/` → **0 hit**
+- grep data personal lama di luar `context/` → **0 hit** ( Change 6 memperluas ini ke `context/` juga )
 
 **Catatan**: tests memakai `factories` + `resetDatabase()` (DB hermetik), bukan data seed — kecuali acceptance 0a yang baca seed (contract diperbarui bersamaan). Infra test: `docker run invoice-me-dev-pg` (postgres:16-alpine, bind 127.0.0.1:5432, volume `.data/postgres`) dibuat ulang setelah `pg-host` orfan dibuang di Tier 1.
 
@@ -120,7 +120,7 @@ Tanggal: 2026-10-22 (orchestrator, sesi fresh)
 
 **Pertahanan inti**: Next.js app + Prisma + auth multi-tenant + invoice engine + payments + PDF in-app + admin panel.
 **Buang**: pg-host (orfan), build cache, image-image tidak terpakai, port 3001 bocor.
-**Benahi**: pdf-service (luluhkan / amankan), seed "Sigit Berkarya", postgres credential, APP_PORT.
+**Benahi**: pdf-service (luluhkan / amankan), seed "CreaInvoice Studio", postgres credential, APP_PORT.
 **Harus dibangun bila SaaS**: billing/plans, public signup, email transactional, storage S3/R2.
 
 **Tone sebelum menyimpan**: proyek ini bukan cacat — auth-nya matang, PDF-nya benar (A4, metadata, footer multi-halaman), audit-nya lengkap. Yang terjadi: AI PRD menskalakan untuk "bisa semua", padahal kebutuhan Anda "cetak invoice + lihat status bayar". 80% kode inti memang dibutuhkan. Yang over: container fleet (4 container, 12,6 GB) dan seed demo. Bukan perombakan — pembersihan + 4 modul SaaS yang hilang.

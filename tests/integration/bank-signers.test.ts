@@ -43,8 +43,7 @@ import { issueInvoice } from "@/modules/invoices/issue-service";
 import { getInvoiceDetail } from "@/modules/invoices/detail-service";
 import { getPrintDocument } from "@/modules/invoices/print-document";
 import { rendererDataFromIssued } from "@/components/invoice/renderer-data";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
 import {
   addMembership,
   createOrganization,
@@ -52,6 +51,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let owner: TestUser;
 let staff: TestUser;
@@ -69,18 +69,11 @@ const PNG_BYTES = Buffer.from(
   "base64",
 );
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 
 const ownerCtx = (organizationId?: string) =>
-  ctxFor(organizationId ?? org.id, "OWNER", owner.id);
-const staffCtx = () => ctxFor(org.id, "STAFF", staff.id);
-const viewerCtx = () => ctxFor(org.id, "VIEWER", viewer.id);
+  ctxFor(organizationId ?? org.id, owner.id);
+const staffCtx = () => ctxFor(org.id, staff.id);
+const viewerCtx = () => ctxFor(org.id, viewer.id);
 
 async function expectAppFailure(
   promise: Promise<unknown>,
@@ -148,14 +141,14 @@ beforeAll(async () => {
   owner = await createUser({ username: "bank.owner" });
   staff = await createUser({ username: "bank.staff" });
   viewer = await createUser({ username: "bank.viewer" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Organisasi Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(staff.id, org.id, "STAFF");
   await addMembership(viewer.id, org.id, "VIEWER");
   await addMembership(owner.id, otherOrg.id, "OWNER");
 
-  const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
   customerId = (await createCustomer(customerInput("PT Token Nusantara"), ownerCtx())).id;
 }, 60_000);
@@ -165,7 +158,7 @@ beforeAll(async () => {
 describe("bank account CRUD & encryption at rest (Check When Done)", () => {
   it("creates multi-account; the first becomes default, STAFF may create", async () => {
     const first = await createBankAccount(
-      { bankName: "Bank Uji", accountNumber: ACCOUNT_NUMBER, accountHolder: "PT Karya Nusantara" },
+      { bankName: "Bank Uji", accountNumber: ACCOUNT_NUMBER, accountHolder: "PT CreaInvoice Studio" },
       staffCtx(),
     );
     bankAId = first.id;
@@ -179,7 +172,7 @@ describe("bank account CRUD & encryption at rest (Check When Done)", () => {
         bankName: "Bank Kedua",
         bankCode: "B2",
         accountNumber: "111222333444",
-        accountHolder: "PT Karya Nusantara",
+        accountHolder: "PT CreaInvoice Studio",
         branch: "KCP Sudirman",
         isDefault: true,
       },
@@ -229,7 +222,7 @@ describe("bank account CRUD & encryption at rest (Check When Done)", () => {
       {
         bankName: "Bank Uji Rename",
         accountNumber: "",
-        accountHolder: "PT Karya Nusantara",
+        accountHolder: "PT CreaInvoice Studio",
         isActive: true,
       },
       ownerCtx(),
@@ -243,7 +236,7 @@ describe("bank account CRUD & encryption at rest (Check When Done)", () => {
       {
         bankName: "Bank Uji Rename",
         accountNumber: "999888777012",
-        accountHolder: "PT Karya Nusantara",
+        accountHolder: "PT CreaInvoice Studio",
         isActive: true,
       },
       ownerCtx(),
@@ -258,7 +251,7 @@ describe("bank account CRUD & encryption at rest (Check When Done)", () => {
       {
         bankName: "Bank Uji",
         accountNumber: ACCOUNT_NUMBER,
-        accountHolder: "PT Karya Nusantara",
+        accountHolder: "PT CreaInvoice Studio",
         isActive: true,
       },
       ownerCtx(),
@@ -396,7 +389,7 @@ describe("signer CRUD & signature upload (Check When Done)", () => {
   it("creates with a PNG signature — sniffed content, stored under the org signature folder", async () => {
     const file = new File([PNG_BYTES], "tanda-tangan.png", { type: "image/png" });
     const signer = await createSigner(
-      { name: "Budi Santoso", title: "Direktur", location: "Yogyakarta" },
+      { name: "Andi Wijaya", title: "Direktur", location: "Yogyakarta" },
       staffCtx(),
       { signatureFile: file },
     );
@@ -432,7 +425,7 @@ describe("signer CRUD & signature upload (Check When Done)", () => {
     const before = await db.signer.findUnique({ where: { id: signerAId } });
     const kept = await updateSigner(
       signerAId,
-      { name: "Budi Santoso", title: "Direktur Utama", location: "Yogyakarta", isActive: true },
+      { name: "Andi Wijaya", title: "Direktur Utama", location: "Yogyakarta", isActive: true },
       ownerCtx(),
     );
     expect(kept.signatureImagePath).toBe(before!.signatureImagePath);
@@ -441,7 +434,7 @@ describe("signer CRUD & signature upload (Check When Done)", () => {
     const replacement = new File([PNG_BYTES], "baru.png", { type: "image/png" });
     const replaced = await updateSigner(
       signerAId,
-      { name: "Budi Santoso", title: "Direktur Utama", location: "Yogyakarta", isActive: true },
+      { name: "Andi Wijaya", title: "Direktur Utama", location: "Yogyakarta", isActive: true },
       ownerCtx(),
       { signatureFile: replacement },
     );
@@ -593,7 +586,7 @@ describe("editor integration & snapshot (Check When Done)", () => {
 
     expect(signerSnap).not.toBeNull();
     expect(signerSnap!.signerId).toBe(signerAId);
-    expect(signerSnap!.name).toBe("Budi Santoso");
+    expect(signerSnap!.name).toBe("Andi Wijaya");
   });
 
   it("the print/PDF source renders the full number, never the ciphertext", async () => {

@@ -21,13 +21,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { SetDefaultBankButton } from "@/components/bank-accounts/set-default-bank-button";
-import { can } from "@/modules/permissions/service";
 import { listBankAccountsPage } from "@/modules/bank-accounts/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Rekening Bank — invoice-me",
+  title: "Rekening Bank — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -51,7 +50,7 @@ export default async function BankAccountsPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   const params = await searchParams;
   const page = Math.max(1, Number(first(params.page)) || 1);
 
@@ -72,8 +71,8 @@ export default async function BankAccountsPage({
   }
 
   const result = await listBankAccountsPage({ scope }, { page });
-  const mayCreate = can("bankAccount.create", scope);
-  const mayManage = can("bankAccount.update", scope);
+  const mayCreate = Boolean(scope);
+  const mayManage = Boolean(scope);
 
   return (
     <div className="flex flex-col gap-6">

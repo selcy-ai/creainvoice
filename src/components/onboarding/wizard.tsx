@@ -36,7 +36,7 @@ const STEP_META: Record<number, { title: string; description: string }> = {
   7: { title: "Penanda tangan", description: "Orang yang menandatangani invoice Anda." },
   8: { title: "Profil invoice", description: "Nama profil dan kode singkat untuk nomor invoice." },
   9: { title: "Pola nomor invoice", description: "Format nomor dengan pratinjau langsung." },
-  10: { title: "Preferensi meterai", description: "Cara invoice menampilkan area meterai." },
+  10: { title: "Preferensi meterai", description: "Cara CreaInvoicenampilkan area meterai." },
   11: { title: "Preview invoice", description: "Contoh invoice dengan data yang baru Anda isi." },
   12: { title: "Selesai", description: "Tinjau ringkasan dan akhiri onboarding." },
 };
@@ -79,7 +79,7 @@ function WizardShell() {
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-10">
       <div className="flex flex-col gap-1">
-        <p className="text-sm font-semibold text-primary">invoice-me</p>
+        <p className="text-sm font-semibold text-primary">creainvoice</p>
         <h1 className="text-2xl font-semibold tracking-tight">{meta.title}</h1>
         <p className="text-sm text-muted-foreground">{meta.description}</p>
       </div>

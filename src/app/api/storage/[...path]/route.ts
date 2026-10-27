@@ -8,7 +8,9 @@ import { withErrorHandler } from "@/lib/api-response";
 import { AppError } from "@/lib/errors";
 import { getStorageService } from "@/modules/storage";
 import { db } from "@/server/db";
-import { getSession } from "@/server/session";
+import { getSession } from "@/lib/clerk";
+import { memberships } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
@@ -25,14 +27,18 @@ async function authorizeOrganizationPath(path: string): Promise<void> {
     throw new AppError("UNAUTHORIZED", "Sesi Anda sudah berakhir. Silakan masuk kembali.");
   }
   const organizationId = match[1];
-  const membership = await db.membership.findUnique({
-    where: {
-      userId_organizationId: { userId: session.user.id, organizationId },
-    },
-    select: { status: true },
-  });
-  const isSuperAdmin = session.user.platformRole === "SUPER_ADMIN";
-  if (!isSuperAdmin && (!membership || membership.status !== "ACTIVE")) {
+  const membershipRows = await db
+    .select({ status: memberships.status })
+    .from(memberships)
+    .where(
+      and(
+        eq(memberships.userId, session.userId ?? ""),
+        eq(memberships.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+  const membership = membershipRows[0];
+  if (!membership || membership.status !== "ACTIVE") {
     throw new AppError("NOT_FOUND", "File tidak ditemukan.");
   }
 }

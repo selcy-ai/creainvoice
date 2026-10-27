@@ -14,12 +14,12 @@ import "./setup-env";
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { db } from "@/server/db";
+import { db } from "@/tests/helpers/test-db";
 import { createUser, type TestUser } from "../factories";
 
 // ─── Fixtures (real rows in the dev DB; removed in afterAll) ─────────────────
 
-const USER_NAME = "Budi E2E";
+const USER_NAME = "Andi E2E";
 const ORG_NAME = "PT Uji Onboarding E2E";
 const ACCOUNT_NUMBER = "123456783449"; // 12 digits → mask "**** **** 3449"
 const ACCENT = "#7c3aed";
@@ -110,8 +110,7 @@ test.describe("onboarding 12 langkah (fitur 02)", () => {
       await db.organization.delete({ where: { id: organizationId } });
     }
     await db.auditLog.deleteMany({ where: { actorUserId: user.id } });
-    await db.session.deleteMany({ where: { userId: user.id } });
-    await db.account.deleteMany({ where: { userId: user.id } });
+    // Change 6: session/account were better-auth tables; Clerk owns them now.
     await db.user.deleteMany({ where: { id: user.id } });
   });
 

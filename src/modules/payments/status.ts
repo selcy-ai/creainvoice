@@ -12,7 +12,7 @@
 
 import { AppError } from "@/lib/errors";
 import Decimal from "decimal.js";
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
 
 /**
  * Statuses a payment may be recorded against (spec: ISSUED/SENT/

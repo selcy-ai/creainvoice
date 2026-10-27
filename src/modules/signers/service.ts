@@ -11,13 +11,17 @@
 
 import { log } from "@/modules/audit/service";
 import { AppError } from "@/lib/errors";
+import type { WorkspaceScope } from "@/modules/workspace/service";
 import { prepareImageUpload } from "@/lib/image";
-import { assertCan } from "@/modules/permissions/service";
+import { assertCan } from "@/modules/workspace/permissions";
 import { SIGNERS_PAGE_SIZE, type SignerInput } from "@/modules/signers/schema";
 import { getStorageService } from "@/modules/storage";
 import { logger } from "@/server/logger";
-import { db } from "@/server/db";
-import type { OrganizationRole, Prisma, Signer } from "@prisma/client";
+import { db, type Database } from "@/server/db";
+import { invoiceProfiles, signers } from "@/db/schema";
+
+type Signer = typeof signers.$inferSelect;
+import { and, asc, count, desc, eq, isNotNull, ne } from "drizzle-orm";
 
 export {
   signerSchema,
@@ -26,7 +30,7 @@ export {
 } from "@/modules/signers/schema";
 
 export interface SignerServiceContext {
-  scope: { organizationId: string; role: OrganizationRole; userId: string };
+  scope: WorkspaceScope;
   request?: Request | null;
 }
 
@@ -58,18 +62,28 @@ export function toSignerView(signer: Signer): SignerView {
 }
 
 export async function getDefaultSigner(organizationId: string): Promise<Signer | null> {
-  return db.signer.findFirst({
-    where: { organizationId, isDefault: true, isActive: true },
-    orderBy: { createdAt: "asc" },
-  });
+  const rows = await db
+    .select()
+    .from(signers)
+    .where(
+      and(
+        eq(signers.organizationId, organizationId),
+        eq(signers.isDefault, true),
+        eq(signers.isActive, true),
+      ),
+    )
+    .orderBy(asc(signers.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /** Active signers only — the invoice editor's dropdown. */
 export async function listSigners(organizationId: string): Promise<SignerView[]> {
-  const rows = await db.signer.findMany({
-    where: { organizationId, isActive: true },
-    orderBy: { createdAt: "asc" },
-  });
+  const rows = await db
+    .select()
+    .from(signers)
+    .where(and(eq(signers.organizationId, organizationId), eq(signers.isActive, true)))
+    .orderBy(asc(signers.createdAt));
   return rows.map(toSignerView);
 }
 
@@ -86,16 +100,18 @@ export async function listSignersPage(
 }> {
   assertCan("signer.view", ctx.scope);
   const pageSize = SIGNERS_PAGE_SIZE;
-  const where = { organizationId: ctx.scope.organizationId };
-  const total = await db.signer.count({ where });
+  const where = eq(signers.organizationId, ctx.scope.organizationId);
+  const totalRows = await db.select({ value: count() }).from(signers).where(where);
+  const total = Number(totalRows[0]?.value ?? 0);
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Math.max(1, options.page ?? 1), pageCount);
-  const rows = await db.signer.findMany({
-    where,
-    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }, { id: "asc" }],
-    skip: (page - 1) * pageSize,
-    take: pageSize,
-  });
+  const rows = await db
+    .select()
+    .from(signers)
+    .where(where)
+    .orderBy(desc(signers.isDefault), asc(signers.createdAt), asc(signers.id))
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
   return { rows: rows.map(toSignerView), total, page, pageSize, pageCount };
 }
 
@@ -106,11 +122,13 @@ export async function getSignerDetail(
   ctx: SignerServiceContext,
 ): Promise<SignerView> {
   assertCan("signer.view", ctx.scope);
-  const row = await db.signer.findFirst({
-    where: { id, organizationId: ctx.scope.organizationId },
-  });
-  if (!row) throw new AppError("NOT_FOUND", "Penanda tangan tidak ditemukan.");
-  return toSignerView(row);
+  const rows = await db
+    .select()
+    .from(signers)
+    .where(and(eq(signers.id, id), eq(signers.organizationId, ctx.scope.organizationId)))
+    .limit(1);
+  if (!rows[0]) throw new AppError("NOT_FOUND", "Penanda tangan tidak ditemukan.");
+  return toSignerView(rows[0]);
 }
 
 /** Storage pipeline for the optional image: undefined = "keep the stored
@@ -145,29 +163,39 @@ async function deleteStoredImage(path: string | null): Promise<void> {
  * prefills from `InvoiceProfile.defaultSignerId`, and with one profile per
  * organisation — recorded feature-08 decision — the two must not drift). */
 async function pointProfilesAtSigner(
-  tx: Prisma.TransactionClient,
+  client: Pick<Database, "update">,
   organizationId: string,
   signerId: string | null,
   onlyProfilesPointingAt?: string,
 ): Promise<void> {
-  await tx.invoiceProfile.updateMany({
-    where: {
-      organizationId,
-      ...(onlyProfilesPointingAt ? { defaultSignerId: onlyProfilesPointingAt } : {}),
-    },
-    data: { defaultSignerId: signerId },
-  });
+  await client
+    .update(invoiceProfiles)
+    .set({ defaultSignerId: signerId })
+    .where(
+      and(
+        eq(invoiceProfiles.organizationId, organizationId),
+        onlyProfilesPointingAt
+          ? eq(invoiceProfiles.defaultSignerId, onlyProfilesPointingAt)
+          : isNotNull(invoiceProfiles.id),
+      ),
+    );
 }
 
 async function clearOtherDefaults(
-  tx: Prisma.TransactionClient,
+  client: Pick<Database, "update">,
   organizationId: string,
   keepId: string,
 ): Promise<void> {
-  await tx.signer.updateMany({
-    where: { organizationId, isDefault: true, id: { not: keepId } },
-    data: { isDefault: false },
-  });
+  await client
+    .update(signers)
+    .set({ isDefault: false })
+    .where(
+      and(
+        eq(signers.organizationId, organizationId),
+        eq(signers.isDefault, true),
+        ne(signers.id, keepId),
+      ),
+    );
 }
 
 export async function createSigner(
@@ -178,26 +206,29 @@ export async function createSigner(
   assertCan("signer.create", ctx.scope);
   const organizationId = ctx.scope.organizationId;
 
-  const hasDefault = await db.signer.findFirst({
-    where: { organizationId, isDefault: true },
-    select: { id: true },
-  });
+  const defaultRows = await db
+    .select({ id: signers.id })
+    .from(signers)
+    .where(and(eq(signers.organizationId, organizationId), eq(signers.isDefault, true)))
+    .limit(1);
   // First signer is always the default; afterwards the checkbox decides.
-  const makeDefault = input.isDefault === true || hasDefault === null;
+  const makeDefault = input.isDefault === true || defaultRows.length === 0;
 
   // Upload before the transaction: storage is not transactional (feature 07
   // rule) — a failed tx leaves no orphan row, only a stray file we do not link.
   const signaturePath = (await uploadSignatureImage(options.signatureFile, organizationId)) ?? null;
 
-  const signer = await db.$transaction(async (tx) => {
+  let signer: Signer | undefined;
+  await db.transaction(async (tx) => {
     if (makeDefault) {
-      await tx.signer.updateMany({
-        where: { organizationId, isDefault: true },
-        data: { isDefault: false },
-      });
+      await tx
+        .update(signers)
+        .set({ isDefault: false })
+        .where(and(eq(signers.organizationId, organizationId), eq(signers.isDefault, true)));
     }
-    const created = await tx.signer.create({
-      data: {
+    const created = await tx
+      .insert(signers)
+      .values({
         organizationId,
         name: input.name,
         title: input.title ?? null,
@@ -205,11 +236,12 @@ export async function createSigner(
         signatureImagePath: signaturePath,
         isDefault: makeDefault,
         isActive: input.isActive ?? true,
-      },
-    });
-    if (makeDefault) await pointProfilesAtSigner(tx, organizationId, created.id);
-    return created;
+      })
+      .returning();
+    signer = created[0] ?? null;
+    if (signer && makeDefault) await pointProfilesAtSigner(tx, organizationId, signer.id);
   });
+  if (!signer) throw new AppError("INTERNAL_ERROR", "Penanda tangan gagal dibuat.");
 
   await log({
     actorUserId: ctx.scope.userId,
@@ -236,7 +268,12 @@ export async function updateSigner(
 ): Promise<Signer> {
   assertCan("signer.update", ctx.scope);
   const organizationId = ctx.scope.organizationId;
-  const existing = await db.signer.findFirst({ where: { id, organizationId } });
+  const existingRows = await db
+    .select()
+    .from(signers)
+    .where(and(eq(signers.id, id), eq(signers.organizationId, organizationId)))
+    .limit(1);
+  const existing = existingRows[0];
   if (!existing) throw new AppError("NOT_FOUND", "Penanda tangan tidak ditemukan.");
 
   const wantDefault = input.isDefault ?? existing.isDefault;
@@ -247,23 +284,26 @@ export async function updateSigner(
   const nextSignature = signaturePath === undefined ? existing.signatureImagePath : signaturePath;
   const replacedSignature = signaturePath !== undefined && signaturePath !== existing.signatureImagePath;
 
-  const signer = await db.$transaction(async (tx) => {
+  let signer: Signer | undefined;
+  await db.transaction(async (tx) => {
     if (becameDefault) await clearOtherDefaults(tx, organizationId, id);
-    const updated = await tx.signer.update({
-      where: { id: existing.id },
-      data: {
+    const updated = await tx
+      .update(signers)
+      .set({
         name: input.name,
         title: input.title ?? null,
         location: input.location ?? null,
         signatureImagePath: nextSignature,
         isActive: input.isActive ?? existing.isActive,
         isDefault: wantDefault,
-      },
-    });
-    if (becameDefault) await pointProfilesAtSigner(tx, organizationId, id);
-    if (unsetDefault) await pointProfilesAtSigner(tx, organizationId, null, id);
-    return updated;
+      })
+      .where(eq(signers.id, existing.id))
+      .returning();
+    signer = updated[0] ?? null;
+    if (signer && becameDefault) await pointProfilesAtSigner(tx, organizationId, id);
+    if (signer && unsetDefault) await pointProfilesAtSigner(tx, organizationId, null, id);
   });
+  if (!signer) throw new AppError("INTERNAL_ERROR", "Penanda tangan gagal diperbarui.");
 
   // The replaced file can only be removed once the row no longer points at it.
   if (replacedSignature) await deleteStoredImage(existing.signatureImagePath);
@@ -292,19 +332,27 @@ export async function setDefaultSigner(
 ): Promise<Signer> {
   assertCan("signer.update", ctx.scope);
   const organizationId = ctx.scope.organizationId;
-  const existing = await db.signer.findFirst({ where: { id, organizationId } });
+  const existingRows = await db
+    .select()
+    .from(signers)
+    .where(and(eq(signers.id, id), eq(signers.organizationId, organizationId)))
+    .limit(1);
+  const existing = existingRows[0];
   if (!existing) throw new AppError("NOT_FOUND", "Penanda tangan tidak ditemukan.");
   if (existing.isDefault) return existing;
 
-  const signer = await db.$transaction(async (tx) => {
+  let signer: Signer | undefined;
+  await db.transaction(async (tx) => {
     await clearOtherDefaults(tx, organizationId, id);
-    const updated = await tx.signer.update({
-      where: { id: existing.id },
-      data: { isDefault: true },
-    });
-    await pointProfilesAtSigner(tx, organizationId, id);
-    return updated;
+    const updated = await tx
+      .update(signers)
+      .set({ isDefault: true })
+      .where(eq(signers.id, existing.id))
+      .returning();
+    signer = updated[0] ?? null;
+    if (signer) await pointProfilesAtSigner(tx, organizationId, id);
   });
+  if (!signer) throw new AppError("INTERNAL_ERROR", "Penanda tangan gagal diubah.");
 
   await log({
     actorUserId: ctx.scope.userId,
@@ -330,10 +378,15 @@ export async function deleteSigner(
 ): Promise<void> {
   assertCan("signer.delete", ctx.scope);
   const organizationId = ctx.scope.organizationId;
-  const existing = await db.signer.findFirst({ where: { id, organizationId } });
+  const existingRows = await db
+    .select()
+    .from(signers)
+    .where(and(eq(signers.id, id), eq(signers.organizationId, organizationId)))
+    .limit(1);
+  const existing = existingRows[0];
   if (!existing) throw new AppError("NOT_FOUND", "Penanda tangan tidak ditemukan.");
 
-  await db.signer.delete({ where: { id: existing.id } });
+  await db.delete(signers).where(eq(signers.id, existing.id));
   await deleteStoredImage(existing.signatureImagePath);
 
   await log({
@@ -364,23 +417,26 @@ export async function saveSigner(
 
   const existing = await getDefaultSigner(ctx.scope.organizationId);
 
-  let signer: Signer;
+  let signer: Signer | undefined;
   if (existing) {
-    signer = await db.signer.update({
-      where: { id: existing.id },
-      data: {
+    const updated = await db
+      .update(signers)
+      .set({
         name: input.name,
         title: input.title ?? null,
         location: input.location ?? null,
         ...(signaturePath ? { signatureImagePath: signaturePath } : {}),
-      },
-    });
+      })
+      .where(eq(signers.id, existing.id))
+      .returning();
+    signer = updated[0] ?? null;
     if (signaturePath && existing.signatureImagePath && signaturePath !== existing.signatureImagePath) {
       await deleteStoredImage(existing.signatureImagePath);
     }
   } else {
-    signer = await db.signer.create({
-      data: {
+    const created = await db
+      .insert(signers)
+      .values({
         organizationId: ctx.scope.organizationId,
         name: input.name,
         title: input.title ?? null,
@@ -388,21 +444,29 @@ export async function saveSigner(
         signatureImagePath: signaturePath ?? null,
         isDefault: true,
         isActive: true,
-      },
-    });
+      })
+      .returning();
+    signer = created[0] ?? null;
   }
+  if (!signer) throw new AppError("INTERNAL_ERROR", "Penanda tangan gagal disimpan.");
 
   // Link as the profile's default signer when a profile exists yet (mirrors
   // saveBankAccount: feature 06 reads defaultSignerId when rendering).
-  const profile = await db.invoiceProfile.findFirst({
-    where: { organizationId: ctx.scope.organizationId, isActive: true },
-    select: { id: true },
-  });
-  if (profile) {
-    await db.invoiceProfile.update({
-      where: { id: profile.id },
-      data: { defaultSignerId: signer.id },
-    });
+  const profileRows = await db
+    .select({ id: invoiceProfiles.id })
+    .from(invoiceProfiles)
+    .where(
+      and(
+        eq(invoiceProfiles.organizationId, ctx.scope.organizationId),
+        eq(invoiceProfiles.isActive, true),
+      ),
+    )
+    .limit(1);
+  if (profileRows[0]) {
+    await db
+      .update(invoiceProfiles)
+      .set({ defaultSignerId: signer.id })
+      .where(eq(invoiceProfiles.id, profileRows[0].id));
   }
 
   await log({

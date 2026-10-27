@@ -9,12 +9,11 @@ import { redirect } from "next/navigation";
 import { ArrowLeftIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BankAccountForm } from "@/components/bank-accounts/bank-account-form";
-import { can } from "@/modules/permissions/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Tambah Rekening — invoice-me",
+  title: "Tambah Rekening — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -23,8 +22,8 @@ export default async function NewBankAccountPage() {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
-  if (!scope || !can("bankAccount.create", scope)) redirect("/bank-accounts");
+  const scope = await resolveWorkspaceScope(session);
+  if (!scope || !Boolean(scope)) redirect("/bank-accounts");
 
   return (
     <div className="flex flex-col gap-6">

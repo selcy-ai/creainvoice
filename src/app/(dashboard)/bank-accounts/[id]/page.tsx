@@ -13,14 +13,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { BankAccountForm } from "@/components/bank-accounts/bank-account-form";
 import { DeleteBankAccountButton } from "@/components/bank-accounts/delete-bank-account-button";
-import { can } from "@/modules/permissions/service";
 import { getBankAccountDetail } from "@/modules/bank-accounts/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 import { isAppError } from "@/lib/errors";
 
 export const metadata: Metadata = {
-  title: "Detail Rekening — invoice-me",
+  title: "Detail Rekening — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -33,7 +32,7 @@ export default async function BankAccountDetailPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) redirect("/login");
 
   const { id } = await params;
@@ -46,8 +45,8 @@ export default async function BankAccountDetailPage({
     throw error;
   }
 
-  const mayEdit = can("bankAccount.update", scope);
-  const mayDelete = can("bankAccount.delete", scope);
+  const mayEdit = Boolean(scope);
+  const mayDelete = Boolean(scope);
 
   return (
     <div className="flex flex-col gap-6">

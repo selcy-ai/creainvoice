@@ -1,4 +1,4 @@
-# ─── invoice-me — multi-stage production image ──────────────────────────────
+# ─── creainvoice — multi-stage production image ──────────────────────────────
 #
 # Build must work in TWO environments from the same file:
 #   1. Coolify / any machine with npm access — `npm ci` installs from the

@@ -14,12 +14,11 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isAppError } from "@/lib/errors";
 import { maskTaxId, getCustomerForScope, toContactView } from "@/modules/customers/service";
-import { can } from "@/modules/permissions/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Detail Customer — invoice-me",
+  title: "Detail Customer — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -33,7 +32,7 @@ export default async function CustomerDetailPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) redirect("/customers");
 
   let customer;
@@ -45,8 +44,8 @@ export default async function CustomerDetailPage({
     throw error;
   }
 
-  const mayEdit = can("customer.update", scope);
-  const mayDelete = can("customer.delete", scope);
+  const mayEdit = Boolean(scope);
+  const mayDelete = Boolean(scope);
 
   // PII rule: the raw NPWP only rides along for an authorized editor.
   const rawTaxId = customer.taxId ?? "";

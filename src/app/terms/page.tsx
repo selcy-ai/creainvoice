@@ -9,9 +9,9 @@ import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 
 export const metadata: Metadata = {
-  title: "Syarat & Ketentuan — invoice-me",
+  title: "Syarat & Ketentuan — creainvoice",
   description:
-    "Syarat dan ketentuan penggunaan invoice-me, termasuk ketentuan cookie dan batasan tanggung jawab.",
+    "Syarat dan ketentuan penggunaan creainvoice, termasuk ketentuan cookie dan batasan tanggung jawab.",
   robots: { index: true, follow: true },
 };
 
@@ -34,20 +34,20 @@ export default function TermsPage() {
           </Link>
           <h1 className="text-3xl font-bold tracking-tight">Syarat &amp; Ketentuan</h1>
           <p className="text-sm text-muted-foreground">
-            Berlaku untuk penggunaan invoice-me. Terakhir diperbarui: 10 Oktober 2026.
+            Berlaku untuk penggunaan creainvoice. Terakhir diperbarui: 10 Oktober 2026.
           </p>
         </header>
 
         <Card>
           <CardContent className="flex flex-col gap-6 py-6">
             <Section title="Penerimaan syarat">
-              Dengan mengakses dan menggunakan invoice-me, Anda menyetujui syarat dan ketentuan
+              Dengan mengakses dan menggunakan creainvoice, Anda menyetujui syarat dan ketentuan
               ini. Jika Anda menggunakan aplikasi ini atas nama organisasi, Anda menyatakan
               berwenang untuk mengikat organisasi tersebut.
             </Section>
 
             <Section title="Sifat layanan">
-              invoice-me adalah alat pembuatan dan pengelolaan invoice yang di-hosting sendiri
+              creainvoice adalah alat pembuatan dan pengelolaan invoice yang di-hosting sendiri
               (self-hosted). Aplikasi ini <strong>bukan</strong> penyedia layanan pembayaran, bukan
               bank, dan bukan penyedia jasa akuntansi. Status pembayaran yang tercatat di aplikasi
               bersifat catatan (rekaman), bukan konfirmasi transfer dana dari bank.

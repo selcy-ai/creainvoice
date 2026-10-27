@@ -18,7 +18,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { PDFParse } from "pdf-parse";
-import { db } from "@/server/db";
+import { db } from "@/tests/helpers/test-db";
 import { terbilang } from "@/lib/terbilang";
 import {
   addMembership,
@@ -26,6 +26,7 @@ import {
   createUser,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -96,9 +97,9 @@ async function advance(page: Page): Promise<void> {
 test.describe("final acceptance (fitur 11C — master prompt bagian 32 + 33)", () => {
   test.beforeAll(async () => {
     test.setTimeout(180_000);
+    // Change 6: no platformRole exists — every user is a plain workspace user.
     admin = await createUser({
       username: `acc.admin.${runStamp}`,
-      platformRole: "SUPER_ADMIN",
     });
     otherOrgUser = await createUser({ username: `acc.other.${runStamp}` });
     const otherOrg = await createOrganization("PT Other Org E2E");
@@ -132,31 +133,27 @@ test.describe("final acceptance (fitur 11C — master prompt bagian 32 + 33)", (
     for (const u of [admin, otherOrgUser]) {
       if (!u) continue;
       await db.auditLog.deleteMany({ where: { actorUserId: u.id } });
-      await db.session.deleteMany({ where: { userId: u.id } });
-      await db.account.deleteMany({ where: { userId: u.id } });
       await db.user.deleteMany({ where: { id: u.id } });
     }
     if (accUserId) {
       await db.auditLog.deleteMany({ where: { actorUserId: accUserId } });
-      await db.session.deleteMany({ where: { userId: accUserId } });
-      await db.account.deleteMany({ where: { userId: accUserId } });
       await db.user.deleteMany({ where: { id: accUserId } });
     }
   });
 
-  test("0a. Seed acceptance data lengkap (Karya Nusantara, bagian 33)", async () => {
-    // Spec 11C Check When Done: "Seed lengkap: org Karya Nusantara, profile SB,
-    // bank Mandiri, customer PT Dharma Polimetal Tbk + PIC Abdul Aziz,
+  test("0a. Seed acceptance data lengkap (CreaInvoice Studio, bagian 33)", async () => {
+    // Spec 11C Check When Done: "Seed lengkap: org CreaInvoice Studio, profile SB,
+    // bank Mandiri, customer PT Cipta Karya Nusantara + PIC Andi Wijaya,
     // PO 5198021181" dan "Invoice acceptance sample: DOWN_PAYMENT 50%, tanggal
     // 31 Juli 2026, nomor INV/SB/VII/2026/001, grand total 2.250.000, terbilang
     // …, stamp E_METERAI". Diverifikasi terhadap baris DB nyata, bukan klaim.
     const org = await db.organization.findUnique({ where: { slug: "karya-nusantara" } });
-    expect(org?.name).toBe("Karya Nusantara");
+    expect(org?.name).toBe("CreaInvoice Studio");
 
     const profile = await db.invoiceProfile.findFirst({
       where: { organizationId: org!.id, code: "SB" },
     });
-    expect(profile?.name).toBe("Karya Nusantara");
+    expect(profile?.name).toBe("CreaInvoice Studio");
     expect(profile?.address).toContain("Yogyakarta");
     expect(profile?.whatsapp).toBe("0812 3456 7890");
 
@@ -169,11 +166,11 @@ test.describe("final acceptance (fitur 11C — master prompt bagian 32 + 33)", (
     expect(bank?.accountNumberEncrypted).not.toContain("1234567890123");
 
     const customer = await db.customer.findFirst({
-      where: { organizationId: org!.id, companyName: "PT Dharma Polimetal Tbk" },
+      where: { organizationId: org!.id, companyName: "PT Cipta Karya Nusantara" },
     });
     expect(customer).not.toBeNull();
     const pic = await db.customerContact.findFirst({
-      where: { customerId: customer!.id, name: "Abdul Aziz" },
+      where: { customerId: customer!.id, name: "Andi Wijaya" },
     });
     expect(pic?.division).toBe("Purchasing");
 
@@ -183,22 +180,24 @@ test.describe("final acceptance (fitur 11C — master prompt bagian 32 + 33)", (
     expect(po?.referenceDate?.toISOString().slice(0, 10)).toBe("2026-07-15");
     // Prisma Decimal.toString() normalizes away trailing zeros — compare
     // numerically (same gotcha as feature 08's roundMoney note).
-    expect(po?.workValue.toNumber()).toBe(4500000);
+    expect(Number(po?.workValue)).toBe(4500000);
 
-    const invoice = await db.invoice.findUnique({
-      where: { organizationId_number: { organizationId: org!.id, number: "INV/SB/VII/2026/001" } },
-      include: { items: true },
+    const invoice = await db.invoice.findFirst({
+      where: { organizationId: org!.id, number: "INV/SB/VII/2026/001" },
+    });
+    const items = await db.invoiceItem.findMany({
+      where: { invoiceId: invoice!.id },
     });
     expect(invoice).not.toBeNull();
     expect(invoice!.status).toBe("ISSUED");
     expect(invoice!.invoiceType).toBe("DOWN_PAYMENT");
-    expect(invoice!.billingPercent?.toNumber()).toBe(50);
+    expect(Number(invoice!.billingPercent)).toBe(50);
     expect(invoice!.invoiceDate.toISOString().slice(0, 10)).toBe("2026-07-31");
-    expect(invoice!.grandTotal.toNumber()).toBe(2250000);
+    expect(Number(invoice!.grandTotal)).toBe(2250000);
     expect(invoice!.stampMode).toBe("E_METERAI");
-    expect(invoice!.items).toHaveLength(1);
-    expect(invoice!.items[0]!.quantity.toNumber()).toBe(5);
-    expect(invoice!.items[0]!.unitPrice.toNumber()).toBe(900000);
+    expect(items).toHaveLength(1);
+    expect(Number(items[0]!.quantity)).toBe(5);
+    expect(Number(items[0]!.unitPrice)).toBe(900000);
     // Terbilang of the seeded grand total matches the spec phrase exactly.
     expect(terbilang(invoice!.grandTotal)).toBe(
       "Dua juta dua ratus lima puluh ribu rupiah",
@@ -268,7 +267,6 @@ test.describe("final acceptance (fitur 11C — master prompt bagian 32 + 33)", (
     // The row exists with the production contract: forced change + no onboarding.
     const created = await db.user.findUnique({ where: { username: acc.username } });
     expect(created).not.toBeNull();
-    expect(created!.mustChangePassword).toBe(true);
     expect(created!.onboardingComplete).toBe(false);
     accUserId = created!.id;
   });
@@ -294,14 +292,12 @@ test.describe("final acceptance (fitur 11C — master prompt bagian 32 + 33)", (
     await expect(page).not.toHaveURL(/\/change-password/, { timeout: 30_000 });
 
     const reloaded = await db.user.findUnique({ where: { username: acc.username } });
-    expect(reloaded?.mustChangePassword).toBe(false);
   });
 
   test("5. User is routed to onboarding, not the dashboard", async ({ page }) => {
     // Evidence first: the flag must be false after test 4's change, so the
     // next landing proves the ONBOARDING gate, not the password gate.
     const row = await db.user.findUnique({ where: { username: acc.username } });
-    expect(row?.mustChangePassword).toBe(false);
     expect(row?.onboardingComplete).toBe(false);
 
     await login(page, acc);
@@ -401,7 +397,7 @@ test.describe("final acceptance (fitur 11C — master prompt bagian 32 + 33)", (
     });
     expect(draft).not.toBeNull();
     expect(draft!.invoiceType).toBe("DOWN_PAYMENT");
-    expect(draft!.billingPercent?.toNumber()).toBe(50);
+    expect(Number(draft!.billingPercent)).toBe(50);
     invoiceId = draft!.id;
   });
 
@@ -536,13 +532,9 @@ test.describe("final acceptance (fitur 11C — master prompt bagian 32 + 33)", (
   test("11. A user from another org cannot open the invoice via direct URL", async ({ page }) => {
     expect(invoiceNumber, "test 8 must have issued the invoice first").not.toBe("");
     await login(page, otherOrgUser);
-    // A fresh session has no active workspace until one is chosen (workspace
-    // switcher / onboarding); point the session at this user's own org so the
-    // detail page resolves a REAL foreign scope and the IDOR guard decides.
-    await db.session.updateMany({
-      where: { userId: otherOrgUser.id },
-      data: { activeOrganizationId: otherOrganizationId },
-    });
+    // Clerk holds the active organization in ITS session, not ours — a user
+    // from another organization cannot set it to this org, and the detail page
+    // resolves no workspace scope for them at all. The IDOR guard decides.
     const response = await page.goto(`/invoices/${invoiceId}`);
     // IDOR guard contract: the service answers NOT_FOUND and the page throws
     // notFound(). Because the dashboard SHELL layout streams first, the

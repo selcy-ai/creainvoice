@@ -11,7 +11,7 @@
 // the status arrays and the reason validator are only covered as side effects.
 
 import { AppError } from "@/lib/errors";
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
 import { describe, expect, it } from "vitest";
 import {
   BILLED_STATUSES,

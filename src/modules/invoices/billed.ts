@@ -11,7 +11,10 @@
 //   • projects/service.ts          (billedToDate on the project detail page)
 
 import Decimal from "decimal.js";
-import type { InvoiceStatus, Prisma, PrismaClient } from "@prisma/client";
+import { invoices } from "@/db/schema";
+import type { InvoiceStatus } from "@/db/enums";
+import { and, eq, inArray, isNotNull, ne, sum } from "drizzle-orm";
+import type { Database } from "@/server/db";
 
 /** Statuses that count toward previouslyBilled (invariant 6). */
 export const BILLED_STATUSES: readonly InvoiceStatus[] = [
@@ -35,7 +38,7 @@ export interface BilledSumScope {
   excludeInvoiceId?: string;
 }
 
-type DbClient = PrismaClient | Prisma.TransactionClient;
+type DbClient = Pick<Database, "select">;
 
 /**
  * Σ grandTotal of the invoices of one project that count as billed. Decimal
@@ -46,16 +49,19 @@ export async function sumBilledForProject(
   scope: BilledSumScope,
 ): Promise<string> {
   if (!scope.projectReferenceId) return "0.00";
-  const rows = await client.invoice.findMany({
-    where: {
-      organizationId: scope.organizationId,
-      projectReferenceId: scope.projectReferenceId,
-      status: { in: [...BILLED_STATUSES] },
-      ...(scope.excludeInvoiceId ? { id: { not: scope.excludeInvoiceId } } : {}),
-    },
-    select: { grandTotal: true },
-  });
-  return rows
-    .reduce((sum, row) => sum.plus(row.grandTotal.toString()), new Decimal(0))
-    .toFixed(2);
+  const rows = await client
+    .select({ total: sum(invoices.grandTotal) })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.organizationId, scope.organizationId),
+        eq(invoices.projectReferenceId, scope.projectReferenceId),
+        inArray(invoices.status, [...BILLED_STATUSES]),
+        scope.excludeInvoiceId
+          ? ne(invoices.id, scope.excludeInvoiceId)
+          : isNotNull(invoices.id),
+      ),
+    );
+  const value = rows[0]?.total ?? "0";
+  return new Decimal(String(value)).toFixed(2);
 }

@@ -14,8 +14,8 @@ import {
   zodFailure,
 } from "@/lib/action";
 import { apiFailure, apiOk, type ActionResult } from "@/lib/api-response";
-import { requireSession } from "@/server/session";
-import { requireActiveOrgScope } from "@/modules/organizations/service";
+import { requireSession } from "@/lib/clerk";
+import { requireWorkspaceScope } from "@/modules/workspace/service";
 import { recordPaymentSchema } from "@/modules/payments/schema";
 import {
   deletePayment,
@@ -25,7 +25,7 @@ import {
 
 async function serviceContext() {
   const session = await requireSession();
-  const scope = await requireActiveOrgScope(session);
+  const scope = await requireWorkspaceScope(session);
   return { scope, request: await actionRequest() };
 }
 

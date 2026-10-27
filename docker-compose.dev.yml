@@ -1,44 +1,27 @@
-# Development compose — runs postgres only.
-# App runs locally via: npm run dev
+# Development compose — runs pdf-service only.
+# The database is Neon Postgres (Change 6): local dev connects to the Neon
+# pooled endpoint via DATABASE_URL in .env.local, so there is no local
+# postgres service to start. App runs locally via: npm run dev
 # STORAGE_ROOT maps to .data/ for local file storage.
-#
-# The postgres service ALSO joins the `internal` network — the same
-# project-namespaced network docker-compose.yml defines — so a locally run
-# app AND the containers from the production compose (app/pdf-service) can
-# both reach this database. Both files declare an identical `internal`
-# driver, so whichever stack starts first creates it for the other.
-
 services:
-  postgres:
-    image: postgres:16-alpine
+  pdf-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.pdf
     environment:
-      POSTGRES_DB: invoice_me
-      POSTGRES_USER: invoice
-      POSTGRES_PASSWORD: invoice
+      NODE_ENV: production
+      INTERNAL_PDF_SECRET: ${INTERNAL_PDF_SECRET}
+      INTERNAL_APP_URL: ${INTERNAL_APP_URL:-http://localhost:3000}
+      STORAGE_ROOT: /data
+      PORT: 3001
     ports:
-      - "5432:5432"
+      - "3001:3001"
     volumes:
-      - ./.data/postgres:/var/lib/postgresql/data
-    networks:
-      # `internal` lets the production-compose app/pdf-service containers
-      # reach this database; the normal `default` bridge is what makes the
-      # host port mapping work — this Docker environment does not install
-      # publish rules for containers sitting on an internal-only network
-      # (verified: -p on an internal-only net never listens; internal +
-      # a normal net publishes fine).
-      - default
-      - internal
+      - ./.data:/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U invoice -d invoice_me"]
+      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:3001/health',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
     restart: unless-stopped
-
-networks:
-  default:
-    driver: bridge
-  internal:
-    driver: bridge
-    internal: true

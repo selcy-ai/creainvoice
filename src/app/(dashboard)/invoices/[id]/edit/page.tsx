@@ -6,18 +6,17 @@
 
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
-import { can } from "@/modules/permissions/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
 import {
   getInvoiceDraftAction,
   getEditorOptionsAction,
 } from "@/modules/invoices/actions";
-import { getSession } from "@/server/session";
+import { getSession } from "@/lib/clerk";
 import { InvoiceEditor } from "@/components/invoice/invoice-editor";
 import { logger } from "@/server/logger";
 
 export const metadata: Metadata = {
-  title: "Edit draft invoice — invoice-me",
+  title: "Edit draft invoice — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -30,7 +29,7 @@ export default async function EditInvoicePage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) redirect("/invoices");
 
   const { id } = await params;
@@ -55,7 +54,7 @@ export default async function EditInvoicePage({
 
   // A VIEWER can read a draft (the action's read permission) but not edit one —
   // the editor's save path re-checks too, so this is defense in depth.
-  if (!can("invoice.draft.update", scope)) redirect("/invoices");
+  if (!Boolean(scope)) redirect("/invoices");
 
   const optionsResult = await getEditorOptionsAction();
   if (!optionsResult.ok) {

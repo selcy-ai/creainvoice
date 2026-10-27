@@ -9,7 +9,8 @@
 // never change a document that has already been issued (feature 05 check:
 // "snapshot immutability").
 
-import type { BillingMode, InvoiceType, Prisma, StampMode, TaxMode } from "@prisma/client";
+import type { BillingMode, InvoiceType, StampMode, TaxMode } from "@/db/enums";
+// Change 6: dropped Prisma (role tiers removed)
 import type { InvoiceCalcResult } from "@/modules/invoices/calculation";
 
 /** Who issued the document (invoice profile state at issue time). */
@@ -145,7 +146,7 @@ export interface InvoiceSnapshots {
  * answers null instead of pretending to be a snapshot — callers then fall back
  * to the live relation and log, never crash the page.
  */
-export function parseSnapshot<T>(value: Prisma.JsonValue | null | undefined): T | null {
+export function parseSnapshot<T>(value: unknown): T | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "object" || Array.isArray(value)) return null;
   // JsonObject → caller-declared snapshot shape. The value came from our own
@@ -154,12 +155,10 @@ export function parseSnapshot<T>(value: Prisma.JsonValue | null | undefined): T 
 }
 
 /**
- * Snapshot → Prisma Json-column input. Snapshots are JSON-safe by
- * construction (strings, numbers, null, plain objects), so the round-trip is
- * lossless; it also hands Prisma the structural object shape its
- * InputJsonObject expects (interfaces carry no index signature) and guarantees
- * no Date/Decimal ever lands in a Json column.
+ * Snapshot → jsonb-column input. Snapshots are JSON-safe by construction
+ * (strings, numbers, null, plain objects), so the round-trip is lossless; it
+ * also guarantees no Date/Decimal ever lands in a jsonb column.
  */
-export function toJsonInput<T>(value: T): Prisma.InputJsonValue {
+export function toJsonInput<T>(value: T): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value));
 }

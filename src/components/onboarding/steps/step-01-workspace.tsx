@@ -129,7 +129,7 @@ export function Step1Workspace() {
             <Input
               id="org-name"
               name="name"
-              placeholder="mis. Karya Nusantara"
+              placeholder="mis. CreaInvoice Studio"
               autoComplete="organization"
               disabled={pending}
               aria-invalid={Boolean(fieldError(state, "name")) || undefined}

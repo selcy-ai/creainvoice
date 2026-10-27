@@ -1,3 +1,8 @@
+// src/server/env.ts — validated environment (Change 6: Clerk + Neon stack).
+//
+// The app fails fast at startup when a required variable is missing (Zod
+// schema). Production values live in the Vercel dashboard, never in the repo.
+
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -9,26 +14,15 @@ const envSchema = z.object({
   APP_URL: z.string().url().default("http://localhost:3000"),
   APP_PORT: z.coerce.number().default(3000),
 
-  // Database
+  // Database — Neon Postgres (pooled endpoint). Local dev AND tests connect
+  // to Neon (engineer decision, Change 6).
   DATABASE_URL: z.string().min(1),
 
-  // Auth
-  BETTER_AUTH_SECRET: z.string().min(32),
-  BETTER_AUTH_URL: z.string().url().default("http://localhost:3000"),
-  // Extra origins Better Auth accepts `Origin` from. The app is reached
-  // through several front doors: the LAN IP directly, and an SSH tunnel
-  // that surfaces as http://localhost:3000 on the developer's machine.
-  // Without these, sign-out and other origin-checked POSTs reject with
-  // `INVALID_ORIGIN` ("Gagal keluar, sesi belum berakhir").
-  BETTER_AUTH_TRUSTED_ORIGINS: z
-    .string()
-    .default("")
-    .transform((value) =>
-      value
-        .split(",")
-        .map((origin) => origin.trim())
-        .filter(Boolean),
-    ),
+  // Auth — Clerk (Change 6). The publishable key is safe for the client
+  // bundle; the secret key and the webhook signing secret never are.
+  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: z.string().min(1),
+  CLERK_SECRET_KEY: z.string().min(1),
+  CLERK_WEBHOOK_SIGNING_SECRET: z.string().optional(),
 
   // PDF service
   INTERNAL_PDF_SECRET: z.string().min(32),
@@ -50,11 +44,6 @@ const envSchema = z.object({
 
   // Localization
   DEFAULT_TIMEZONE: z.string().default("Asia/Jakarta"),
-
-  // Seed (optional)
-  SEED_ADMIN_USERNAME: z.string().optional(),
-  SEED_ADMIN_EMAIL: z.string().email().optional(),
-  SEED_ADMIN_PASSWORD: z.string().optional(),
 
   // Bank account encryption at rest (AES-256-GCM key material; min 32 chars)
   BANK_ACCOUNT_ENCRYPTION_KEY: z.string().min(32),

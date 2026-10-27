@@ -46,8 +46,7 @@ import {
   updateDraft,
 } from "@/modules/invoices/service";
 import type { InvoiceDraftFormOutput } from "@/modules/invoices/schema";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
 import {
   addMembership,
   createOrganization,
@@ -55,17 +54,25 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
-import { CookieJar, signIn } from "../helpers/auth";
+import { ctxFor } from "@/tests/helpers/context";
+import { clerkSessionMock, setCurrentUser } from "../helpers/clerk-session";
 
-// ─── next/headers stub for the server-action layer ──────────────────────────
-// Server actions resolve the session through next/headers; the mock reads a
-// hoisted cookie holder so the action layer can be exercised in-process with
-// a REAL signed-in session (no HTTP server needed).
+// ─── Clerk session stub for the server-action layer ────────────────────────
+// Server actions resolve the caller through requireSession() (src/lib/clerk),
+// which reads @clerk/nextjs/server. The mock below answers as whichever user
+// the test "signed in" as, and requireWorkspaceScope() then re-validates that
+// user's membership against the real database — so the action layer is
+// exercised in-process with a REAL session (no HTTP server needed).
 
-const hoistedCookie = vi.hoisted(() => ({ value: "" }));
-
+vi.mock("@clerk/nextjs/server", () => clerkSessionMock());
+// actionRequest() reads next/headers to attach request metadata to audit rows;
+// the action layer runs in-process, so an empty header set is the right stub.
 vi.mock("next/headers", () => ({
-  headers: async () => new Headers(hoistedCookie.value ? { cookie: hoistedCookie.value } : {}),
+  headers: async () => new Headers(),
+  cookies: async () => ({
+    get: () => undefined,
+    getAll: () => [],
+  }),
 }));
 
 let owner: TestUser;
@@ -81,24 +88,17 @@ let projectId: string;
 let bankAccountId: string;
 let signerId: string;
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 
 function ownerCtx(organizationId?: string) {
-  return ctxFor(organizationId ?? org.id, "OWNER", owner.id);
+  return ctxFor(organizationId ?? org.id, owner.id);
 }
 
 function staffCtx() {
-  return ctxFor(org.id, "STAFF", staff.id);
+  return ctxFor(org.id, staff.id);
 }
 
 function viewerCtx() {
-  return ctxFor(org.id, "VIEWER", viewer.id);
+  return ctxFor(org.id, viewer.id);
 }
 
 async function expectAppFailure(
@@ -245,14 +245,14 @@ beforeAll(async () => {
   owner = await createUser({ username: "edge.owner" });
   staff = await createUser({ username: "edge.staff" });
   viewer = await createUser({ username: "edge.viewer" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Organisasi Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(staff.id, org.id, "STAFF");
   await addMembership(viewer.id, org.id, "VIEWER");
   await addMembership(owner.id, otherOrg.id, "OWNER");
 
-  const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
   // The other org needs its own profile + customer before its rows can exist.
   const otherProfile = await createProfile(ownerCtx(otherOrg.id), { name: "Organisasi Lain", code: "OL" });
@@ -262,13 +262,13 @@ beforeAll(async () => {
     {
       bankName: "Bank Uji",
       accountNumber: "1234567890",
-      accountHolder: "PT Karya Nusantara",
+      accountHolder: "PT CreaInvoice Studio",
     },
     ownerCtx(),
   );
   const bank = await db.bankAccount.findFirst({ where: { organizationId: org.id } });
   bankAccountId = bank!.id;
-  await saveSigner({ name: "Karya Nusantara", title: "Direktur" }, ownerCtx());
+  await saveSigner({ name: "CreaInvoice Studio", title: "Direktur" }, ownerCtx());
   const signer = await db.signer.findFirst({ where: { organizationId: org.id } });
   signerId = signer!.id;
 
@@ -282,10 +282,7 @@ beforeAll(async () => {
   const project = await createProject(projectInput(customerId), ownerCtx());
   projectId = project.id;
   // Sign in as the OWNER of the main org so the action layer sees a real session.
-  const jar = new CookieJar();
-  const response = await signIn(jar, owner.username, owner.password);
-  expect(response.status).toBe(200);
-  hoistedCookie.value = jar.header();
+  setCurrentUser({ id: owner.id, orgId: org.id });
 });
 
 // ─── Server recalculation ───────────────────────────────────────────────────
@@ -402,74 +399,61 @@ describe("server recalculation — forged client totals are ignored", () => {
 
 // ─── Permission: VIEWER is refused everywhere ───────────────────────────────
 
-describe("permission — VIEWER cannot touch drafts", () => {
-  it("refuses create (403), update (403), read (403), list (403), delete (403)", async () => {
+describe("permission — flat workspace: every member can touch drafts", () => {
+  // Change 6: role tiers are gone — a VIEWER is a full admin of the workspace.
+  // The old suite asserted VIEWER was refused; the flat contract asserts every
+  // verified member can read AND write, with org isolation doing the gating.
+  it("create, update, read, list and delete all succeed for any member", async () => {
     const created = await createDraft(draftInput(), ownerCtx());
 
-    const createFailure = await expectAppFailure(createDraft(draftInput(), viewerCtx()), "FORBIDDEN");
-    expect(createFailure.message).toMatch(/izin/i);
-    await expectAppFailure(
-      updateDraft(created.id, draftInput({ notes: "diubah viewer" }), viewerCtx()),
-      "FORBIDDEN",
+    const viewerDraft = await createDraft(draftInput(), viewerCtx());
+    const updated = await updateDraft(
+      created.id,
+      draftInput({ notes: "diubah member" }),
+      viewerCtx(),
     );
-    await expectAppFailure(getDraft(created.id, viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(listDrafts(viewerCtx(), {}), "FORBIDDEN");
-    await expectAppFailure(deleteDraft(created.id, viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(
-      getDraftNumberPreview(profileId, "2026-07-01", viewerCtx()),
-      "FORBIDDEN",
-    );
+    expect(updated.notes).toBe("diubah member");
 
-    // Nothing was written through any forbidden path.
-    const reloaded = await getDraft(created.id, ownerCtx());
-    expect(reloaded.notes).toBeNull();
+    const read = await getDraft(created.id, viewerCtx());
+    expect(read.id).toBe(created.id);
+    const list = await listDrafts(viewerCtx(), {});
+    expect(list.total).toBeGreaterThan(0);
+
+    await deleteDraft(viewerDraft.id, viewerCtx());
+    expect(await getDraft(viewerDraft.id, viewerCtx())).toBe(null);
   });
 
-  it("refuses the number preview and the prefill helper too", async () => {
-    await expectAppFailure(
-      getDraftNumberPreview(profileId, "2026-07-01", viewerCtx()),
-      "FORBIDDEN",
-    );
-    // prefill only needs requireOrgScope — a VIEWER with an active org gets 404
-    // for a foreign project, but a VIEWER of the SAME org is allowed to read it.
-    const ours = await prefillEditorFromProject(projectId, ctxFor(org.id, "VIEWER", viewer.id));
+  it("the number preview and the prefill helper work for any member", async () => {
+    const preview = await getDraftNumberPreview(profileId, "2026-07-01", viewerCtx());
+    expect(preview).toBeTruthy();
+    const ours = await prefillEditorFromProject(projectId, ctxFor(org.id, viewer.id));
     expect(ours.customerId).toBe(customerId);
   });
 
-  it("the action layer answers FORBIDDEN (ok:false) for the VIEWER session", async () => {
+  it("the action layer answers ok:true for any verified member session", async () => {
     const { createInvoiceDraftAction, listInvoiceDraftsAction, invoiceNumberPreviewAction } =
       await import("@/modules/invoices/actions");
 
     // Sign in as the VIEWER of the main org.
-    const jar = new CookieJar();
-    const response = await signIn(jar, viewer.username, viewer.password);
-    expect(response.status).toBe(200);
-    hoistedCookie.value = jar.header();
+    setCurrentUser({ id: viewer.id, orgId: org.id });
 
     const createResult = await createInvoiceDraftAction(actionPayload() as never);
-    expect(createResult.ok).toBe(false);
-    if (createResult.ok) return;
-    expect(createResult.error.code).toBe("FORBIDDEN");
+    expect(createResult.ok).toBe(true);
 
     const listResult = await listInvoiceDraftsAction({});
-    expect(listResult.ok).toBe(false);
-    if (!listResult.ok) expect(listResult.error.code).toBe("FORBIDDEN");
+    expect(listResult.ok).toBe(true);
 
     const previewResult = await invoiceNumberPreviewAction({
       profileId,
       invoiceDate: "2026-07-01",
     });
-    expect(previewResult.ok).toBe(false);
-    if (!previewResult.ok) expect(previewResult.error.code).toBe("FORBIDDEN");
+    expect(previewResult.ok).toBe(true);
 
     // Restore the OWNER session for the remaining tests.
-    const ownerJar = new CookieJar();
-    const ownerResponse = await signIn(ownerJar, owner.username, owner.password);
-    expect(ownerResponse.status).toBe(200);
-    hoistedCookie.value = ownerJar.header();
+    setCurrentUser({ id: owner.id, orgId: org.id });
   });
 
-  it("a STAFF member may create and update (the permission is role, not identity)", async () => {
+  it("a STAFF member may create and update (flat: every member can)", async () => {
     const created = await createDraft(draftInput(), staffCtx());
     const updated = await updateDraft(
       created.id,
@@ -573,12 +557,9 @@ describe("org isolation — foreign ids answer 404 (IDOR)", () => {
     );
 
     // Sign in as the OTHER org's owner (a real session for that org).
-    const jar = new CookieJar();
     const otherOwner = await createUser({ username: "edge.other.owner" });
     await addMembership(otherOwner.id, otherOrg.id, "OWNER");
-    const response = await signIn(jar, otherOwner.username, otherOwner.password);
-    expect(response.status).toBe(200);
-    hoistedCookie.value = jar.header();
+    setCurrentUser({ id: otherOwner.id, orgId: otherOrg.id });
 
     const readResult = await getInvoiceDraftAction({ invoiceId: created.id });
     expect(readResult.ok).toBe(false);
@@ -592,10 +573,7 @@ describe("org isolation — foreign ids answer 404 (IDOR)", () => {
     if (!updateResult.ok) expect(updateResult.error.code).toBe("NOT_FOUND");
 
     // Restore the OWNER session.
-    const ownerJar = new CookieJar();
-    const ownerResponse = await signIn(ownerJar, owner.username, owner.password);
-    expect(ownerResponse.status).toBe(200);
-    hoistedCookie.value = ownerJar.header();
+    setCurrentUser({ id: owner.id, orgId: org.id });
   });
 
   it("the number preview answers 404 for a foreign profile id", async () => {

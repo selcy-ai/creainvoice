@@ -33,7 +33,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { PrismaClient } from "@prisma/client";
+import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const REPO_ROOT = process.cwd();
@@ -135,35 +135,41 @@ function seedStorage(root: string): void {
   );
 }
 
-let admin: PrismaClient;
+// Change 6: Prisma is gone — a plain `pg` Pool is the direct replacement for
+// the raw-SQL-only use this suite ever made of PrismaClient.
+let admin: Pool;
 
 async function createDb(name: string): Promise<void> {
-  await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-  await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+  await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+  await admin.query(`CREATE DATABASE "${name}"`);
 }
 
 async function seedNotes(dbName: string, rows: Array<[number, string]>): Promise<void> {
-  const client = new PrismaClient({ datasourceUrl: urlFor(dbName) });
+  const client = new Pool({ connectionString: urlFor(dbName) });
   try {
-    await client.$executeRawUnsafe(
+    await client.query(
       'CREATE TABLE IF NOT EXISTS "BkNote" (id integer PRIMARY KEY, v text NOT NULL)',
     );
     for (const [id, v] of rows) {
-      await client.$executeRawUnsafe(
-        `INSERT INTO "BkNote" (id, v) VALUES (${id}, '${v}') ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v`,
+      await client.query(
+        `INSERT INTO "BkNote" (id, v) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v`,
+        [id, v],
       );
     }
   } finally {
-    await client.$disconnect();
+    await client.end();
   }
 }
 
 async function readNotes(dbName: string): Promise<Array<{ id: number; v: string }>> {
-  const client = new PrismaClient({ datasourceUrl: urlFor(dbName) });
+  const client = new Pool({ connectionString: urlFor(dbName) });
   try {
-    return await client.$queryRaw<Array<{ id: number; v: string }>>`SELECT id, v FROM "BkNote" ORDER BY id`;
+    const result = await client.query<{ id: number; v: string }>(
+      'SELECT id, v FROM "BkNote" ORDER BY id',
+    );
+    return result.rows;
   } finally {
-    await client.$disconnect();
+    await client.end();
   }
 }
 
@@ -175,7 +181,7 @@ beforeAll(async () => {
   targetBackupDest = join(scratchRoot, "backups-target");
   seedStorage(storageRoot);
 
-  admin = new PrismaClient({ datasourceUrl: ADMIN_URL });
+  admin = new Pool({ connectionString: ADMIN_URL });
   await createDb(SRC_DB);
   await createDb(TARGET_DB);
   await createDb(EMPTY_DB);
@@ -187,10 +193,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await admin?.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${SRC_DB}" WITH (FORCE)`);
-  await admin?.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${TARGET_DB}" WITH (FORCE)`);
-  await admin?.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${EMPTY_DB}" WITH (FORCE)`);
-  await admin?.$disconnect();
+  await admin?.query(`DROP DATABASE IF EXISTS "${SRC_DB}" WITH (FORCE)`);
+  await admin?.query(`DROP DATABASE IF EXISTS "${TARGET_DB}" WITH (FORCE)`);
+  await admin?.query(`DROP DATABASE IF EXISTS "${EMPTY_DB}" WITH (FORCE)`);
+  await admin?.end();
   if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
 });
 
@@ -513,7 +519,7 @@ describe("restore.sh — explicit confirmation + isolated check DB + full restor
     rmSync(storageDirMatch?.[1] as string, { recursive: true, force: true });
 
     // Clean up the kept check DB so later assertions about it stay meaningful.
-    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${SCRATCH_CHECK_DB}" WITH (FORCE)`);
+    await admin.query(`DROP DATABASE IF EXISTS "${SCRATCH_CHECK_DB}" WITH (FORCE)`);
   }, 60_000);
 
   it("restores into the isolated check DB first, then rewinds database + storage, and keeps a pre-restore snapshot", async () => {
@@ -559,12 +565,15 @@ describe("restore.sh — explicit confirmation + isolated check DB + full restor
     expect(existsSync(join(preRestore, dbSnapshots[0] as string, "db.dump"))).toBe(true);
 
     // The isolated check database does not linger.
-    const adminClient = new PrismaClient({ datasourceUrl: ADMIN_URL });
+    const adminClient = new Pool({ connectionString: ADMIN_URL });
     try {
-      const [found] = await adminClient.$queryRaw<Array<{ exists: boolean }>>`SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = ${SCRATCH_CHECK_DB}) AS "exists"`;
-      expect(found.exists).toBe(false);
+      const found = await adminClient.query<{ exists: boolean }>(
+        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1) AS exists",
+        [SCRATCH_CHECK_DB],
+      );
+      expect(found.rows[0]!.exists).toBe(false);
     } finally {
-      await adminClient.$disconnect();
+      await adminClient.end();
     }
   }, 60_000);
 

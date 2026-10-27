@@ -33,13 +33,12 @@ import {
   REFERENCE_TYPE_LABELS,
 } from "@/modules/projects/schema";
 import { getProjectForScope, getProjectBilling, type ProjectDetail } from "@/modules/projects/service";
-import { can } from "@/modules/permissions/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 import { env } from "@/server/env";
 
 export const metadata: Metadata = {
-  title: "Detail Project — invoice-me",
+  title: "Detail Project — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -79,7 +78,7 @@ export default async function ProjectDetailPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) redirect("/projects");
 
   let project;
@@ -90,9 +89,9 @@ export default async function ProjectDetailPage({
     throw error;
   }
 
-  const mayEdit = can("project.update", scope);
-  const mayDelete = can("project.delete", scope);
-  const mayCreateInvoice = can("invoice.draft.create", scope);
+  const mayEdit = Boolean(scope);
+  const mayDelete = Boolean(scope);
+  const mayCreateInvoice = Boolean(scope);
 
   // Feature 05: real billing numbers (the feature-03 placeholder is replaced
   // by the Invoice-table sum — invariant 6: DRAFT/CANCELLED/REVISED never

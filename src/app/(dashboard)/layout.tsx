@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
-import type { NavVisibility } from "@/components/layout/nav-config";
-import { can } from "@/modules/permissions/service";
-import { getWorkspaceOverview, resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { getSession } from "@/lib/clerk";
+import {
+  getWorkspaceOverview,
+  resolveWorkspaceScope,
+} from "@/modules/workspace/service";
+import { getOnboardingState } from "@/modules/onboarding/service";
 
 export const metadata: Metadata = {
-  title: "Dashboard — invoice-me",
+  title: "Dashboard — CreaInvoice",
 };
 
 export default async function DashboardLayout({
@@ -16,41 +18,25 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const session = await getSession();
-  if (!session) redirect("/login");
+  if (!session?.userId) redirect("/login");
 
-  // Defense in depth: the proxy already routes this, but a compromised
-  // process must not expose the dashboard to an un-onboarded user.
-  if (
-    session.user.platformRole !== "SUPER_ADMIN" &&
-    session.user.onboardingComplete !== true
-  ) {
-    redirect("/onboarding");
-  }
+  // Onboarding gate (feature 02): users who never finished the 12-step
+  // workspace wizard can only be on /onboarding. Defense in depth — the
+  // proxy passes everything through; this layout enforces the route.
+  const onboarding = await getOnboardingState(session.userId);
+  if (!onboarding.complete) redirect("/onboarding");
 
   const overview = await getWorkspaceOverview(session);
-  const scope = await resolveActiveOrgScope(session);
-
-  // Permission-aware menu (feature 08): flags come from the central matrix;
-  // no active workspace → gated entries stay hidden (fail closed).
-  const navVisibility: NavVisibility = {
-    payments: scope ? can("payment.view", scope) : false,
-    customers: scope ? can("customer.view", scope) : false,
-    projects: scope ? can("project.view", scope) : false,
-    bankAccounts: scope ? can("bankAccount.view", scope) : false,
-    signers: scope ? can("signer.view", scope) : false,
-  };
+  const scope = await resolveWorkspaceScope(session);
 
   return (
     <AppShell
       user={{
-        name: session.user.name,
-        username: session.user.username ?? null,
-        email: session.user.email,
-        platformRole: session.user.platformRole ?? "USER",
+        name: session.user?.fullName ?? session.user?.username ?? null,
+        email: session.user?.primaryEmailAddress?.emailAddress ?? null,
       }}
       memberships={overview.memberships}
       activeOrganizationId={overview.activeOrganizationId}
-      navVisibility={navVisibility}
     >
       {children}
     </AppShell>

@@ -12,7 +12,7 @@ import {
   countsTowardPreviouslyBilled,
   sumBilledForProject,
 } from "@/modules/invoices/billed";
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
 
 describe("BILLED_STATUSES", () => {
   it("is exactly the issued-and-later set (invariant 6)", () => {

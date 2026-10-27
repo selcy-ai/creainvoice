@@ -18,13 +18,17 @@
 
 import { AppError } from "@/lib/errors";
 import { db } from "@/server/db";
+import { customerContacts, invoiceItems, invoiceProfiles, invoices } from "@/db/schema";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { todayInJakarta, toCalendarInput } from "@/lib/date";
 import { log } from "@/modules/audit/service";
-import { assertCan, requireOrgScope } from "@/modules/permissions/service";
+import { assertCan, requireOrgScope } from "@/modules/workspace/permissions";
 import { buildNumberPreview } from "@/modules/invoices/numbering";
 import { sumBilledForProject } from "@/modules/invoices/billed";
 import { calcFromRows, type InvoiceServiceContext } from "@/modules/invoices/service";
-import type { Invoice, InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
+
+type Invoice = typeof invoices.$inferSelect;
 
 // ─── OVERDUE (on-read; scheduled sweep belongs to feature 11) ─────────────
 
@@ -85,7 +89,8 @@ export function validateCancelReason(reason: string | null | undefined): string 
 // ─── Shared guards ────────────────────────────────────────────────────────
 
 async function getScopedInvoice(invoiceId: string, ctx: InvoiceServiceContext): Promise<Invoice> {
-  const invoice = await db.invoice.findUnique({ where: { id: invoiceId } });
+  const rows = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  const invoice = rows[0];
   if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
     // IDOR guard: a foreign invoice id answers 404, never "exists elsewhere".
     throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
@@ -172,12 +177,13 @@ export async function markSent(
     throw new AppError("LOCKED", "Hanya invoice terbit yang bisa ditandai terkirim.");
   }
 
-  await db.$transaction(async (tx) => {
-    const updated = await tx.invoice.updateMany({
-      where: { id: invoiceId, status: "ISSUED" },
-      data: { status: "SENT" },
-    });
-    if (updated.count !== 1) {
+  await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(invoices)
+      .set({ status: "SENT" })
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.status, "ISSUED")))
+      .returning({ id: invoices.id });
+    if (updated.length !== 1) {
       throw new AppError("LOCKED", "Status invoice berubah — muat ulang halaman.");
     }
     await log(
@@ -218,12 +224,13 @@ export async function cancelInvoice(
   assertCancellable(invoice);
 
   const cancelledAt = new Date();
-  await db.$transaction(async (tx) => {
-    const updated = await tx.invoice.updateMany({
-      where: { id: invoiceId, status: { in: [...CANCELABLE_STATUSES] } },
-      data: { status: "CANCELLED", cancelledAt, cancellationReason },
-    });
-    if (updated.count !== 1) {
+  await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(invoices)
+      .set({ status: "CANCELLED", cancelledAt, cancellationReason })
+      .where(and(eq(invoices.id, invoiceId), inArray(invoices.status, [...CANCELABLE_STATUSES])))
+      .returning({ id: invoices.id });
+    if (updated.length !== 1) {
       throw new AppError("LOCKED", "Status invoice berubah — muat ulang halaman.");
     }
     // Reason is stored on the invoice row; the audit metadata keeps only the
@@ -273,13 +280,14 @@ export async function createRevision(
   const original = await getScopedInvoice(invoiceId, ctx);
   assertRevisable(original);
 
-  return db.$transaction(
+  return db.transaction(
     async (tx) => {
       // Row lock: a concurrent "Create revisi" click waits here, then reads
       // REVISED and is rejected — exactly one revision per invoice.
-      await tx.$queryRaw`SELECT id FROM "Invoice" WHERE id = ${invoiceId} FOR UPDATE`;
+      await tx.execute(sql`SELECT id FROM "invoice" WHERE id = ${invoiceId} FOR UPDATE`);
 
-      const fresh = await tx.invoice.findUnique({ where: { id: invoiceId } });
+      const freshRows = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+      const fresh = freshRows[0];
       if (!fresh || fresh.organizationId !== ctx.scope.organizationId) {
         throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
       }
@@ -293,8 +301,9 @@ export async function createRevision(
         excludeInvoiceId: fresh.id,
       });
 
-      const created = await tx.invoice.create({
-        data: {
+      const createdRows = await tx
+        .insert(invoices)
+        .values({
           organizationId: fresh.organizationId,
           createdById: ctx.scope.userId,
           profileId: fresh.profileId,
@@ -340,18 +349,22 @@ export async function createRevision(
           revisedFromId: fresh.id,
           // amountPaid/remainingAfter start fresh: the copy is a NEW document
           // (payments of the original stay with the original — feature 07).
-        },
-        select: { id: true },
-      });
+        })
+        .returning({ id: invoices.id });
+      const createdId = createdRows[0]?.id ?? null;
+      if (!createdId) {
+        throw new AppError("INTERNAL_ERROR", "Gagal membuat revisi invoice.");
+      }
 
-      const originalItems = await tx.invoiceItem.findMany({
-        where: { invoiceId },
-        orderBy: { position: "asc" },
-      });
+      const originalItems = await tx
+        .select()
+        .from(invoiceItems)
+        .where(eq(invoiceItems.invoiceId, invoiceId))
+        .orderBy(asc(invoiceItems.position));
       if (originalItems.length > 0) {
-        await tx.invoiceItem.createMany({
-          data: originalItems.map((item) => ({
-            invoiceId: created.id,
+        await tx.insert(invoiceItems).values(
+          originalItems.map((item) => ({
+            invoiceId: createdId,
             position: item.position,
             description: item.description,
             details: item.details,
@@ -360,38 +373,62 @@ export async function createRevision(
             unitPrice: item.unitPrice,
             discountAmount: item.discountAmount,
             lineAmount: item.lineAmount,
-            metadata: item.metadata ?? undefined,
+            metadata: item.metadata,
           })),
-        });
+        );
       }
 
       // Old invoice keeps every value — status + link only (invariant 5).
-      const updatedOriginal = await tx.invoice.updateMany({
-        where: { id: invoiceId, status: { in: [...REVISABLE_STATUSES] } },
-        data: { status: "REVISED", replacedById: created.id },
-      });
-      if (updatedOriginal.count !== 1) {
+      const updatedOriginal = await tx
+        .update(invoices)
+        .set({ status: "REVISED", replacedById: createdId })
+        .where(and(eq(invoices.id, invoiceId), inArray(invoices.status, [...REVISABLE_STATUSES])))
+        .returning({ id: invoices.id });
+      if (updatedOriginal.length !== 1) {
         throw new AppError("CONFLICT", "Invoice berubah — muat ulang halaman.");
       }
 
       // Recalculate the copy against the fresh billed context and give it a
       // non-binding draft number preview (feature 04 behaviour).
-      const copyRow = await tx.invoice.findUnique({
-        where: { id: created.id },
-        include: {
-          profile: true,
-          customer: true,
-          customerContact: { select: { id: true, name: true } },
-          projectReference: { select: { id: true, title: true } },
-          items: { orderBy: { position: "asc" as const } },
-        },
-      });
-      if (!copyRow) throw new AppError("INTERNAL_ERROR", "Gagal membuat revisi invoice.");
+      const copyRows = await tx
+        .select({
+          invoice: invoices,
+          profile: invoiceProfiles,
+          customerContact: customerContacts,
+        })
+        .from(invoices)
+        .leftJoin(invoiceProfiles, eq(invoiceProfiles.id, invoices.profileId))
+        .leftJoin(customerContacts, eq(customerContacts.id, invoices.customerContactId))
+        .where(eq(invoices.id, createdId))
+        .limit(1);
+      const copyJoined = copyRows[0];
+      if (!copyJoined || !copyJoined.profile) {
+        throw new AppError("INTERNAL_ERROR", "Gagal membuat revisi invoice.");
+      }
+      const copyItems = await tx
+        .select()
+        .from(invoiceItems)
+        .where(eq(invoiceItems.invoiceId, createdId))
+        .orderBy(asc(invoiceItems.position));
+      const copyRow = {
+        ...copyJoined.invoice,
+        profile: copyJoined.profile,
+        customer: null,
+        customerContact: copyJoined.customerContact
+          ? { id: copyJoined.customerContact.id, name: copyJoined.customerContact.name }
+          : null,
+        projectReference: null,
+        items: copyItems,
+      } as unknown as Parameters<typeof calcFromRows>[0];
       const calc = calcFromRows(copyRow, previouslyBilled);
-      const numberPreview = await buildNumberPreview(copyRow.profile, copyRow.invoiceDate, tx);
-      await tx.invoice.update({
-        where: { id: created.id },
-        data: {
+      const numberPreview = await buildNumberPreview(
+        copyJoined.profile,
+        copyJoined.invoice.invoiceDate,
+        tx,
+      );
+      await tx
+        .update(invoices)
+        .set({
           workValue: calc.workValue,
           itemsSubtotal: calc.itemsSubtotal,
           previouslyBilled: calc.previouslyBilled,
@@ -402,8 +439,8 @@ export async function createRevision(
           roundingAmount: calc.roundingAmount,
           grandTotal: calc.grandTotal,
           numberPreview,
-        },
-      });
+        })
+        .where(eq(invoices.id, createdId));
 
       await log(
         {
@@ -414,7 +451,7 @@ export async function createRevision(
           entityId: invoiceId,
           metadata: {
             number: fresh.number,
-            revisedInvoiceId: created.id,
+            revisedInvoiceId: createdId,
             grandTotal: calc.grandTotal,
           },
           request: ctx.request ?? null,
@@ -422,8 +459,7 @@ export async function createRevision(
         tx,
       );
 
-      return { originalId: invoiceId, draftId: created.id };
+      return { originalId: invoiceId, draftId: createdId };
     },
-    { timeout: 20_000 },
   );
 }

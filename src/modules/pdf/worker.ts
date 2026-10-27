@@ -28,6 +28,8 @@ import { AppError, isAppError } from "@/lib/errors";
 import { env } from "@/server/env";
 import { logger } from "@/server/logger";
 import { db } from "@/server/db";
+import { invoicePdfs, invoices, pdfJobs } from "@/db/schema";
+import { and, desc, eq, max, sql } from "drizzle-orm";
 import { logAudit } from "@/modules/audit/service";
 import { requestRender } from "@/modules/pdf/client";
 import { getStorageService } from "@/modules/storage";
@@ -55,6 +57,13 @@ interface ClaimedJob {
   attempt: number;
 }
 
+/** Shape of the raw SQL claim row (values arrive as string from the driver). */
+interface ClientClaimedRow {
+  id: string | number;
+  invoiceId: string | number;
+  attempt: string | number;
+}
+
 /**
  * Atomically claims the oldest claimable PENDING job (status → RUNNING,
  * attempt++). A job that just failed is skipped until RETRY_COOLDOWN_MS has
@@ -63,26 +72,31 @@ interface ClaimedJob {
  * lock the spec asks for.
  */
 export async function claimNextJob(): Promise<ClaimedJob | null> {
-  const rows = await db.$queryRaw<Array<ClaimedJob>>`
+  // Raw SQL because neither Prisma nor Drizzle has `UPDATE ... SKIP LOCKED`
+  // sugar; this is the lock the spec asks for.
+  const rows = await db.execute(sql`
     WITH claimed AS (
-      UPDATE "PdfJob"
+      UPDATE "pdf_job"
       SET "status" = 'RUNNING',
           "attempt" = "attempt" + 1,
-          "startedAt" = now()
+          "started_at" = now()
       WHERE "id" = (
-        SELECT "id" FROM "PdfJob"
+        SELECT "id" FROM "pdf_job"
         WHERE "status" = 'PENDING'
-          AND ("startedAt" IS NULL
-               OR "startedAt" < now() - (${RETRY_COOLDOWN_MS}::int * interval '1 millisecond'))
-        ORDER BY "createdAt" ASC
+          AND ("started_at" IS NULL
+               OR "started_at" < now() - (${RETRY_COOLDOWN_MS}::int * interval '1 millisecond'))
+        ORDER BY "created_at" ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING "id", "invoiceId", "attempt"
+      RETURNING "id", "invoice_id", "attempt"
     )
-    SELECT "id", "invoiceId", "attempt" FROM claimed
-  `;
-  return rows[0] ?? null;
+    SELECT "id", "invoice_id", "attempt" FROM claimed
+  `);
+  const row = rows.rows[0] as unknown as ClientClaimedRow | undefined;
+  return row
+    ? { id: String(row.id), invoiceId: String(row.invoiceId), attempt: Number(row.attempt) }
+    : null;
 }
 
 /**
@@ -91,13 +105,13 @@ export async function claimNextJob(): Promise<ClaimedJob | null> {
  * a crash loop still settles as FAILED after MAX_ATTEMPTS).
  */
 export async function recoverStaleJobs(): Promise<void> {
-  await db.$executeRaw`
-    UPDATE "PdfJob"
+  await db.execute(sql`
+    UPDATE "pdf_job"
     SET "status" = 'PENDING',
-        "errorMessage" = 'Render terputus (proses berhenti) — diantre ulang.'
+        "error_message" = 'Render terputus (proses berhenti) — diantre ulang.'
     WHERE "status" = 'RUNNING'
-      AND "startedAt" < now() - (${STALE_RUNNING_MS}::int * interval '1 millisecond')
-  `;
+      AND "started_at" < now() - (${STALE_RUNNING_MS}::int * interval '1 millisecond')
+  `);
 }
 
 async function finishJob(
@@ -109,13 +123,16 @@ async function finishJob(
   if (outcome === "PENDING") {
     // Retry: back to the queue (the 5s poll is the backoff), keep the last
     // error visible on the row.
-    await db.pdfJob.update({ where: { id: jobId }, data: { status: "PENDING", errorMessage } });
+    await db
+      .update(pdfJobs)
+      .set({ status: "PENDING", errorMessage })
+      .where(eq(pdfJobs.id, jobId));
     return;
   }
-  await db.pdfJob.update({
-    where: { id: jobId },
-    data: { status: outcome, errorMessage, finishedAt: new Date(), durationMs },
-  });
+  await db
+    .update(pdfJobs)
+    .set({ status: outcome, errorMessage, finishedAt: new Date(), durationMs })
+    .where(eq(pdfJobs.id, jobId));
 }
 
 /** Verify the bytes pdf-service wrote, then persist them as the app's own. */
@@ -123,17 +140,19 @@ async function persistPdf(
   invoiceId: string,
   metadata: { storagePath: string; filename: string; sizeBytes: number; sha256: string },
 ): Promise<{ pdfId: string; storagePath: string; version: number; sizeBytes: number }> {
-  const invoice = await db.invoice.findUnique({
-    where: { id: invoiceId },
-    select: {
-      id: true,
-      organizationId: true,
-      invoiceDate: true,
-      issuedById: true,
-      createdById: true,
-      issuerSnapshot: true,
-    },
-  });
+  const invoiceRows = await db
+    .select({
+      id: invoices.id,
+      organizationId: invoices.organizationId,
+      invoiceDate: invoices.invoiceDate,
+      issuedById: invoices.issuedById,
+      createdById: invoices.createdById,
+      issuerSnapshot: invoices.issuerSnapshot,
+    })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  const invoice = invoiceRows[0];
   if (!invoice) {
     throw new AppError("NOT_FOUND", "Invoice tidak ditemukan untuk job PDF ini.");
   }
@@ -164,15 +183,16 @@ async function persistPdf(
     throw new AppError("INTERNAL_ERROR", "Tujuan penyimpanan PDF tidak sesuai.");
   }
 
-  const latest = await db.invoicePdf.aggregate({
-    where: { invoiceId },
-    _max: { version: true },
-  });
-  const version = (latest._max.version ?? 0) + 1;
+  const latestRows = await db
+    .select({ latest: max(invoicePdfs.version) })
+    .from(invoicePdfs)
+    .where(eq(invoicePdfs.invoiceId, invoiceId));
+  const version = (latestRows[0]?.latest ?? 0) + 1;
 
   const issuer = (invoice.issuerSnapshot ?? {}) as { templateKey?: string };
-  const pdf = await db.invoicePdf.create({
-    data: {
+  const created = await db
+    .insert(invoicePdfs)
+    .values({
       invoiceId,
       version,
       storagePath: saved.path,
@@ -181,17 +201,21 @@ async function persistPdf(
       sizeBytes: BigInt(saved.size),
       sha256: saved.sha256,
       templateVersion: `${issuer.templateKey ?? "corporate-blue"}@1`,
-      generatedById: invoice.issuedById ?? invoice.createdById,
+      generatedById: invoice.issuedById ?? invoice.createdById ?? "",
       generatedAt: new Date(),
       isOfficial: true,
-    },
-  });
+    })
+    .returning();
+  const pdf = created[0];
+  if (!pdf) throw new AppError("INTERNAL_ERROR", "InvoicePdf gagal disimpan.");
 
   // Org-scoped update (IDOR-safe by construction: WHERE organizationId).
-  await db.invoice.updateMany({
-    where: { id: invoiceId, organizationId: invoice.organizationId },
-    data: { pdfPath: saved.path },
-  });
+  await db
+    .update(invoices)
+    .set({ pdfPath: saved.path })
+    .where(
+      and(eq(invoices.id, invoiceId), eq(invoices.organizationId, invoice.organizationId)),
+    );
 
   await logAudit({
     actorUserId: pdf.generatedById,

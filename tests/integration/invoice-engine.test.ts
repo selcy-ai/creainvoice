@@ -26,8 +26,7 @@ import {
   updateDraft,
 } from "@/modules/invoices/service";
 import type { InvoiceDraftFormOutput } from "@/modules/invoices/schema";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
 import {
   addMembership,
   createOrganization,
@@ -35,6 +34,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let owner: TestUser;
 let staffId: string;
@@ -45,24 +45,17 @@ let profileId: string;
 let customerId: string;
 let projectId: string;
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 
 function ownerCtx(organizationId?: string) {
-  return ctxFor(organizationId ?? org.id, "OWNER", owner.id);
+  return ctxFor(organizationId ?? org.id, owner.id);
 }
 
 function staffCtx() {
-  return ctxFor(org.id, "STAFF", staffId);
+  return ctxFor(org.id, staffId);
 }
 
 function viewerCtx() {
-  return ctxFor(org.id, "VIEWER", viewerId);
+  return ctxFor(org.id, viewerId);
 }
 
 async function expectAppFailure(
@@ -147,7 +140,7 @@ beforeAll(async () => {
   owner = await createUser({ username: "inv.owner" });
   const staff = await createUser({ username: "inv.staff" });
   const viewer = await createUser({ username: "inv.viewer" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Organisasi Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(staff.id, org.id, "STAFF");
@@ -156,7 +149,7 @@ beforeAll(async () => {
   staffId = staff.id;
   viewerId = viewer.id;
 
-  const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
   // The other org needs its own profile before its drafts can exist.
   await createProfile(ownerCtx(otherOrg.id), { name: "Organisasi Lain", code: "OL" });
@@ -165,11 +158,11 @@ beforeAll(async () => {
     {
       bankName: "Bank Uji",
       accountNumber: "1234567890",
-      accountHolder: "PT Karya Nusantara",
+      accountHolder: "PT CreaInvoice Studio",
     },
     ownerCtx(),
   );
-  await saveSigner({ name: "Karya Nusantara", title: "Direktur" }, ownerCtx());
+  await saveSigner({ name: "CreaInvoice Studio", title: "Direktur" }, ownerCtx());
 
   const customer = await createCustomer(customerInput(), ownerCtx());
   customerId = customer.id;

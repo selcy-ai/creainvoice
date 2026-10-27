@@ -10,14 +10,13 @@ import { PaymentsTable } from "@/components/tables/payments-table";
 import { PaymentRecordDialog } from "@/components/payments/payment-record-dialog";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { env } from "@/server/env";
-import { can } from "@/modules/permissions/service";
 import { PAYMENTS_PAGE_SIZE } from "@/modules/payments/schema";
 import { listPayableInvoices, listPayments } from "@/modules/payments/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Pembayaran — invoice-me",
+  title: "Pembayaran — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -34,7 +33,7 @@ export default async function PaymentsPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   const params = await searchParams;
   const page = Math.max(1, Number(first(params.page)) || 1);
   const invoice = first(params.invoice).slice(0, 100);
@@ -62,7 +61,7 @@ export default async function PaymentsPage({
     { scope },
     { page, pageSize: PAYMENTS_PAGE_SIZE, invoice, customer, from, to },
   );
-  const mayRecord = can("payment.record", scope);
+  const mayRecord = Boolean(scope);
   const payableInvoices = mayRecord ? await listPayableInvoices({ scope }) : [];
 
   return (
@@ -78,7 +77,7 @@ export default async function PaymentsPage({
         {mayRecord && payableInvoices.length > 0 ? (
           <PaymentRecordDialog
             invoices={payableInvoices}
-            canOverrideOverpayment={can("payment.override", scope)}
+            canOverrideOverpayment={Boolean(scope)}
             maxUploadMb={Math.round(env.UPLOAD_MAX_MB)}
           />
         ) : null}

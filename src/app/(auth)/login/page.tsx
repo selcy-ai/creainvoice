@@ -1,15 +1,12 @@
-import type { Metadata } from "next";
-import { LoginForm } from "@/components/forms/login-form";
+// src/app/(auth)/login/page.tsx — Clerk sign-in (Change 6).
+//
+// <SignIn /> renders Clerk's hosted, theme-aware sign-in card (username/
+// email + password, SSO, everything Clerk manages). Credentials live only in
+// Clerk — the old better-auth hashes could not be migrated (agreed), so any
+// pre-existing user must reset their password through Clerk.
 
-export const metadata: Metadata = {
-  title: "Masuk — invoice-me",
-};
+import { SignIn } from "@clerk/nextjs";
 
-export default async function LoginPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ next?: string }>;
-}) {
-  const params = await searchParams;
-  return <LoginForm next={typeof params.next === "string" ? params.next : null} />;
+export default function LoginPage() {
+  return <SignIn />;
 }

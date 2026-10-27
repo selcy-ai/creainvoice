@@ -12,8 +12,8 @@ Pindahkan invoice-me menjadi **creainvoice**: auth beralih dari better-auth ke *
 - **Kaidah branding:** `creainvoice` ( lowercase satu kata ) untuk identifier, service, dan repo. `CreaInvoice` untuk judul manusia di UI. String `Invoice Me`/`invoice me` dihapus total.
 
 ### 2. Data personal dan merek lama ( 105 referensi )
-- **Status quo:** `Sigit Berkarya`, `Sigit Wicaksono`, `sigitberkarya`, `PT Dharma Polimetal Tbk`, `Abdul Aziz`, `ap@dharma.co.id`, `Karya Nusantara`, `Budi Santoso` tersebar di `prisma/seed.mjs`, unit test, feature spec, docs, dan audit notes.
-- **Setelah:** **semua** data personal diganti dengan persona fiktif netral branding creainvoice: organisasi demo **CreaInvoice Studio**, user demo **admin@creainvoice.id** / password admin123, pelanggan demo **PT Cipta Karya Nusantara**, kontak **Andi Wijaya**, domain `creainvoice.id`. Gunakan`token ini` sebagai sumbernya.
+- **Status quo:** nama pendiri, nama kontak, nama perusahaan customer lama, email domain lama, dan nama brand lama tersebar di `prisma/seed.mjs`, unit test, feature spec, docs, dan audit notes ( 105 referensi ).
+- **Setelah:** **semua** data personal diganti dengan persona fiktif netral branding creainvoice: organisasi demo **CreaInvoice Studio**, user demo **admin@creainvoice.id** / password admin123, pelanggan demo **PT Cipta Karya Nusantara**, kontak **Andi Wijaya**, domain `creainvoice.id`. Gunakan `token ini` sebagai sumbernya.
 - **Termasuk:** file `context/*` ( audit notes, feature spec yang memuat nama lama ), test fixtures, seed.
 
 ### 3. Auth: better-auth → Clerk

@@ -4,6 +4,8 @@
 // The proxy and dashboard layout route on these flags; resume uses the step.
 
 import { db } from "@/server/db";
+import { users } from "@/db/schema";
+import { eq } from "drizzle-orm";
 
 export const ONBOARDING_TOTAL_STEPS = 12;
 
@@ -13,10 +15,15 @@ export interface OnboardingState {
 }
 
 export async function getOnboardingState(userId: string): Promise<OnboardingState> {
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: { onboardingComplete: true, onboardingStep: true },
-  });
+  const rows = await db
+    .select({
+      onboardingComplete: users.onboardingComplete,
+      onboardingStep: users.onboardingStep,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const user = rows[0];
   if (!user) return { complete: false, step: 1 };
   return {
     complete: user.onboardingComplete,
@@ -38,18 +45,15 @@ export async function advanceOnboardingStep(userId: string, nextStep: number): P
   if (state.complete) return state;
   const target = clampStep(Math.max(state.step, nextStep));
   if (target === state.step) return state;
-  await db.user.update({
-    where: { id: userId },
-    data: { onboardingStep: target },
-  });
+  await db.update(users).set({ onboardingStep: target }).where(eq(users.id, userId));
   return { complete: false, step: target };
 }
 
 /** Step 12: flip the flag; the proxy then keeps the user out of /onboarding. */
 export async function completeOnboarding(userId: string): Promise<OnboardingState> {
-  await db.user.update({
-    where: { id: userId },
-    data: { onboardingComplete: true, onboardingStep: ONBOARDING_TOTAL_STEPS },
-  });
+  await db
+    .update(users)
+    .set({ onboardingComplete: true, onboardingStep: ONBOARDING_TOTAL_STEPS })
+    .where(eq(users.id, userId));
   return { complete: true, step: ONBOARDING_TOTAL_STEPS };
 }

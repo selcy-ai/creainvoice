@@ -39,8 +39,7 @@ import {
   markSent,
 } from "@/modules/invoices/lifecycle-service";
 import { getInvoiceDetail } from "@/modules/invoices/detail-service";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
 import {
   addMembership,
   createOrganization,
@@ -48,6 +47,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let owner: TestUser;
 let staff: TestUser;
@@ -67,18 +67,11 @@ let foreignCustomerId: string;
 /** The base issued invoice (first issue of the file → 001). */
 let issuedId: string;
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 
 const ownerCtx = (organizationId?: string) =>
-  ctxFor(organizationId ?? org.id, "OWNER", owner.id);
-const staffCtx = () => ctxFor(org.id, "STAFF", staff.id);
-const viewerCtx = () => ctxFor(org.id, "VIEWER", viewer.id);
+  ctxFor(organizationId ?? org.id, owner.id);
+const staffCtx = () => ctxFor(org.id, staff.id);
+const viewerCtx = () => ctxFor(org.id, viewer.id);
 
 async function expectAppFailure(
   promise: Promise<unknown>,
@@ -152,14 +145,14 @@ beforeAll(async () => {
   owner = await createUser({ username: "lc.owner" });
   staff = await createUser({ username: "lc.staff" });
   viewer = await createUser({ username: "lc.viewer" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Organisasi Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(staff.id, org.id, "STAFF");
   await addMembership(viewer.id, org.id, "VIEWER");
   await addMembership(owner.id, otherOrg.id, "OWNER");
 
-  const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
   const foreignProfile = await createProfile(ownerCtx(otherOrg.id), {
     name: "Organisasi Lain",
@@ -171,17 +164,17 @@ beforeAll(async () => {
     {
       bankName: "Bank Uji",
       accountNumber: "1234567890",
-      accountHolder: "PT Karya Nusantara",
+      accountHolder: "PT CreaInvoice Studio",
     },
     ownerCtx(),
   );
   bankId = bank.id;
-  const signer = await saveSigner({ name: "Karya Nusantara", title: "Direktur" }, ownerCtx());
+  const signer = await saveSigner({ name: "CreaInvoice Studio", title: "Direktur" }, ownerCtx());
   signerId = signer.id;
 
   const customer = await createCustomer(customerInput(), ownerCtx());
   customerId = customer.id;
-  const contact = await addContact(customerId, { name: "Budi Santoso", title: "Procurement" }, ownerCtx());
+  const contact = await addContact(customerId, { name: "Andi Wijaya", title: "Procurement" }, ownerCtx());
   contactId = contact.id;
   foreignCustomerId = (await createCustomer(customerInput(), ownerCtx(otherOrg.id))).id;
 
@@ -223,7 +216,7 @@ describe("issue flow (Check When Done)", () => {
     expect(row!.issuedById).toBe(owner.id);
     // Financial lock: outstanding equals the document total (spec step 6).
     expect(row!.remainingAfter.toString()).toBe(row!.grandTotal.toString());
-    expect(row!.grandTotal.toFixed(2)).toBe("2250000.00");
+    expect(Number(row!.grandTotal).toFixed(2)).toBe("2250000.00");
     // All seven snapshots frozen at issue.
     for (const column of [
       "issuerSnapshot",
@@ -308,14 +301,14 @@ describe("issue flow (Check When Done)", () => {
 describe("snapshot immutability (Check When Done)", () => {
   it("profile edits after issue never change the issued document", async () => {
     const before = await getInvoiceDetail(issuedId, ownerCtx());
-    expect(before.issuer.name).toBe("Karya Nusantara");
+    expect(before.issuer.name).toBe("CreaInvoice Studio");
     expect(before.issuer.address).toBeNull();
     expect(before.issuer.logoPath).toBeNull();
 
     // Live master data really does change...
     await updateProfile(
       profileId,
-      { name: "Karya Nusantara Baru", address: "Alamat BARU nomor 99" },
+      { name: "CreaInvoice Studio Baru", address: "Alamat BARU nomor 99" },
       ownerCtx(),
     );
     const oneByOnePng = Buffer.from(
@@ -328,13 +321,13 @@ describe("snapshot immutability (Check When Done)", () => {
       ownerCtx(),
     );
     const liveProfile = await db.invoiceProfile.findUnique({ where: { id: profileId } });
-    expect(liveProfile!.name).toBe("Karya Nusantara Baru");
+    expect(liveProfile!.name).toBe("CreaInvoice Studio Baru");
     expect(liveProfile!.logoPath).not.toBeNull();
 
     // ...but the issued document still renders the frozen snapshot.
     const after = await getInvoiceDetail(issuedId, ownerCtx());
     expect(after.fromSnapshot).toBe(true);
-    expect(after.issuer.name).toBe("Karya Nusantara");
+    expect(after.issuer.name).toBe("CreaInvoice Studio");
     expect(after.issuer.address).toBeNull();
     expect(after.issuer.logoPath).toBeNull();
     expect(after.issuer.primaryColor).toBe(before.issuer.primaryColor);
@@ -351,7 +344,7 @@ describe("snapshot immutability (Check When Done)", () => {
       ownerCtx(),
     );
     await saveBankAccount(
-      { bankName: "Bank Baru", accountNumber: "", accountHolder: "PT Karya Nusantara" },
+      { bankName: "Bank Baru", accountNumber: "", accountHolder: "PT CreaInvoice Studio" },
       ownerCtx(),
     );
 
@@ -503,7 +496,7 @@ describe("revision (Check When Done)", () => {
     expect(oldRow!.replacedById).toBe(revision.draftId);
     // Number history intact — the old document keeps its allocated number.
     expect(oldRow!.number).toMatch(/^INV\/SB\/VII\/2026\/\d{3}$/);
-    expect(oldRow!.grandTotal.toFixed(2)).toBe("4500000.00");
+    expect(Number(oldRow!.grandTotal).toFixed(2)).toBe("4500000.00");
 
     // The replacement is a normal draft carrying the relation + copied items.
     const copy = await getDraft(revision.draftId, ownerCtx());

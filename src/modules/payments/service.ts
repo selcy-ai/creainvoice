@@ -15,12 +15,15 @@
 
 import Decimal from "decimal.js";
 import { AppError } from "@/lib/errors";
+import type { WorkspaceScope } from "@/modules/workspace/service";
 import { db } from "@/server/db";
+import { customers, invoices, payments, users } from "@/db/schema";
+import { and, count, desc, eq, gte, ilike, inArray, lte, or, sql, sum, type SQL } from "drizzle-orm";
 import { logger } from "@/server/logger";
 import { firstZodMessage } from "@/lib/validation";
 import { parseCalendarDate, toCalendarInput } from "@/lib/date";
 import { log } from "@/modules/audit/service";
-import { assertCan, can, requireOrgScope } from "@/modules/permissions/service";
+import { assertCan, can, requireOrgScope } from "@/modules/workspace/permissions";
 import { getStorageService } from "@/modules/storage";
 import {
   PAYABLE_STATUSES,
@@ -34,7 +37,8 @@ import {
   type PaymentMethodValue,
   type RecordPaymentPayload,
 } from "@/modules/payments/schema";
-import type { InvoiceStatus, OrganizationRole, Prisma } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
+// Change 6: dropped OrganizationRole, Prisma (role tiers removed)
 
 /** Storage sub-directory for payment proofs (architecture-context storage
  * model: uploads/organizations/{orgId}/payment-proofs/{uuid}.{ext}). */
@@ -55,7 +59,7 @@ export const MAX_LIST_PAGE_SIZE = 100;
 const PAYABLE_INVOICE_LIMIT = 100;
 
 export interface PaymentServiceContext {
-  scope: { organizationId: string; role: OrganizationRole; userId: string };
+  scope: WorkspaceScope;
   request?: Request | null;
 }
 
@@ -147,39 +151,32 @@ export interface PayableInvoiceOption {
   remaining: string;
 }
 
-type PaymentRow = Awaited<ReturnType<typeof loadRows>>[number];
-
-const paymentInclude = {
-  invoice: {
-    select: {
-      id: true,
-      number: true,
-      numberPreview: true,
-      customerId: true,
-      status: true,
-      grandTotal: true,
-      amountPaid: true,
-      remainingAfter: true,
-      customer: { select: { companyName: true } },
-    },
-  },
-  createdBy: { select: { id: true, name: true, username: true } },
-} satisfies Prisma.PaymentInclude;
 
 /** Newest first, with `id` as the final tiebreaker so pagination is stable. */
-const paymentOrderBy = [
-  { paymentDate: "desc" },
-  { createdAt: "desc" },
-  { id: "desc" },
-] satisfies Prisma.PaymentOrderByWithRelationInput[];
-
-async function loadRows(where: Prisma.PaymentWhereInput, page?: { skip: number; take: number }) {
-  return db.payment.findMany({
-    where,
-    orderBy: paymentOrderBy,
-    ...(page ? { skip: page.skip, take: page.take } : {}),
-    include: paymentInclude,
-  });
+async function loadRows(where: SQL | undefined, page?: { offset: number; limit: number }) {
+  return db
+    .select({
+      payment: payments,
+      invoiceId: invoices.id,
+      invoiceNumber: invoices.number,
+      invoiceNumberPreview: invoices.numberPreview,
+      invoiceCustomerId: invoices.customerId,
+      invoiceStatus: invoices.status,
+      invoiceGrandTotal: invoices.grandTotal,
+      invoiceAmountPaid: invoices.amountPaid,
+      invoiceRemainingAfter: invoices.remainingAfter,
+      invoiceCustomerCompany: customers.companyName,
+      createdByName: users.name,
+      createdByUsername: users.username,
+    })
+    .from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .leftJoin(users, eq(users.id, payments.createdById))
+    .where(where)
+    .orderBy(desc(payments.paymentDate), desc(payments.createdAt), desc(payments.id))
+    .limit(page?.limit ?? 100)
+    .offset(page?.offset ?? 0);
 }
 
 function invoiceLabel(row: {
@@ -189,23 +186,36 @@ function invoiceLabel(row: {
   return row.number ?? row.numberPreview ?? "Draft";
 }
 
-function toPaymentRow(row: PaymentRow): PaymentRowView {
-  const invoice = row.invoice;
+type PaymentJoinedRow = Awaited<ReturnType<typeof loadRows>>[number];
+
+function toPaymentRow(row: PaymentJoinedRow): PaymentRowView {
+  const invoice = {
+    id: row.invoiceId,
+    number: row.invoiceNumber,
+    numberPreview: row.invoiceNumberPreview,
+    customerId: row.invoiceCustomerId,
+    status: row.invoiceStatus,
+    grandTotal: row.invoiceGrandTotal,
+    amountPaid: row.invoiceAmountPaid,
+    remainingAfter: row.invoiceRemainingAfter,
+    customer: { companyName: row.invoiceCustomerCompany },
+  };
+  const payment = row.payment;
   return {
-    id: row.id,
+    id: payment.id,
     invoiceId: invoice.id,
     invoiceLabel: invoiceLabel(invoice),
     customerId: invoice.customerId,
-    customerName: invoice.customer.companyName,
-    paymentDate: toCalendarInput(row.paymentDate.toISOString()),
-    amount: row.amount.toString(),
-    method: row.method,
-    referenceNumber: row.referenceNumber,
-    notes: row.notes,
-    overpaymentReason: row.overpaymentReason,
-    proofPath: row.proofPath,
-    recordedByName: row.createdBy.name ?? row.createdBy.username ?? row.createdBy.id,
-    createdAt: row.createdAt.toISOString(),
+    customerName: invoice.customer.companyName ?? "—",
+    paymentDate: toCalendarInput(payment.paymentDate.toISOString()),
+    amount: payment.amount,
+    method: payment.method,
+    referenceNumber: payment.referenceNumber,
+    notes: payment.notes,
+    overpaymentReason: payment.overpaymentReason,
+    proofPath: payment.proofPath,
+    recordedByName: row.createdByName ?? row.createdByUsername ?? payment.createdById,
+    createdAt: payment.createdAt.toISOString(),
   };
 }
 
@@ -255,12 +265,13 @@ export async function recordPayment(
       : null;
 
   try {
-    return await db.$transaction(
+    return await db.transaction(
       async (tx) => {
         // Row lock: two concurrent recordings on the same invoice serialize
         // here, so the SUM + status recompute can never race.
-        await tx.$queryRaw`SELECT id FROM "Invoice" WHERE id = ${invoiceId} FOR UPDATE`;
-        const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
+        await tx.execute(sql`SELECT id FROM "invoice" WHERE id = ${invoiceId} FOR UPDATE`);
+        const invoiceRows = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+        const invoice = invoiceRows[0];
         if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
           // IDOR guard: a foreign invoice id answers 404, never 403.
           throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
@@ -295,8 +306,9 @@ export async function recordPayment(
           }
         }
 
-        const payment = await tx.payment.create({
-          data: {
+        const createdPayment = await tx
+          .insert(payments)
+          .values({
             organizationId: ctx.scope.organizationId,
             invoiceId,
             paymentDate,
@@ -307,29 +319,31 @@ export async function recordPayment(
             proofPath: storedProof?.path ?? null,
             overpaymentReason: overpayment ? (values.overpaymentReason ?? "").trim() || null : null,
             createdById: ctx.scope.userId,
-          },
-        });
+          })
+          .returning();
+        const payment = createdPayment[0];
+        if (!payment) throw new AppError("INTERNAL_ERROR", "Pembayaran gagal dicatat.");
 
         // The invoice's money comes from the ROWS, always.
-        const sum = await tx.payment.aggregate({
-          where: { invoiceId },
-          _sum: { amount: true },
-        });
-        const amountPaid = new Decimal(sum._sum.amount?.toString() ?? "0");
+        const sumRows = await tx
+          .select({ total: sum(payments.amount) })
+          .from(payments)
+          .where(eq(payments.invoiceId, invoiceId));
+        const amountPaid = new Decimal(sumRows[0]?.total ?? "0");
         const status = recomputePaymentStatus({
           status: invoice.status,
           grandTotal: money(grandTotal),
           amountPaid: money(amountPaid),
         });
 
-        await tx.invoice.update({
-          where: { id: invoiceId },
-          data: {
+        await tx
+          .update(invoices)
+          .set({
             amountPaid: money(amountPaid),
             remainingAfter: remainingAfterPayment(money(grandTotal), money(amountPaid)),
             status,
-          },
-        });
+          })
+          .where(eq(invoices.id, invoiceId));
 
         // Metadata: ids, money and flags only — no free text beyond the
         // reason LENGTH, and never an account number (security-standards).
@@ -365,7 +379,6 @@ export async function recordPayment(
           remainingAfter: remainingAfterPayment(money(grandTotal), money(amountPaid)),
         };
       },
-      { timeout: 20_000 },
     );
   } catch (error) {
     if (storedProof) {
@@ -400,28 +413,39 @@ export async function deletePayment(
   if (!paymentId) {
     throw new AppError("VALIDATION_ERROR", "Pembayaran tidak valid.");
   }
-  const existing = await db.payment.findUnique({ where: { id: paymentId } });
+  const existingRows = await db.select().from(payments).where(eq(payments.id, paymentId)).limit(1);
+  const existing = existingRows[0];
   if (!existing || existing.organizationId !== ctx.scope.organizationId) {
     // IDOR guard: a foreign payment id answers 404.
     throw new AppError("NOT_FOUND", "Pembayaran tidak ditemukan.");
   }
 
-  const outcome = await db.$transaction(
+  const outcome = await db.transaction(
     async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "Invoice" WHERE id = ${existing.invoiceId} FOR UPDATE`;
-      const invoice = await tx.invoice.findUnique({ where: { id: existing.invoiceId } });
+      await tx.execute(sql`SELECT id FROM "invoice" WHERE id = ${existing.invoiceId} FOR UPDATE`);
+      const invoiceRows = await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, existing.invoiceId))
+        .limit(1);
+      const invoice = invoiceRows[0];
       if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
         throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
       }
 
-      const deleted = await tx.payment.delete({ where: { id: paymentId } });
+      const deletedRows = await tx
+        .delete(payments)
+        .where(eq(payments.id, paymentId))
+        .returning();
+      const deleted = deletedRows[0];
+      if (!deleted) throw new AppError("NOT_FOUND", "Pembayaran tidak ditemukan.");
 
-      const sum = await tx.payment.aggregate({
-        where: { invoiceId: invoice.id },
-        _sum: { amount: true },
-      });
-      const amountPaid = new Decimal(sum._sum.amount?.toString() ?? "0");
-      const grandTotal = new Decimal(invoice.grandTotal.toString());
+      const sumRows = await tx
+        .select({ total: sum(payments.amount) })
+        .from(payments)
+        .where(eq(payments.invoiceId, invoice.id));
+      const amountPaid = new Decimal(sumRows[0]?.total ?? "0");
+      const grandTotal = new Decimal(invoice.grandTotal);
       const status = isPayable(invoice.status)
         ? recomputePaymentStatus({
             status: invoice.status,
@@ -430,14 +454,14 @@ export async function deletePayment(
           })
         : invoice.status;
 
-      await tx.invoice.update({
-        where: { id: invoice.id },
-        data: {
+      await tx
+        .update(invoices)
+        .set({
           amountPaid: money(amountPaid),
           remainingAfter: remainingAfterPayment(money(grandTotal), money(amountPaid)),
           status,
-        },
-      });
+        })
+        .where(eq(invoices.id, invoice.id));
 
       await log(
         {
@@ -468,7 +492,6 @@ export async function deletePayment(
         remainingAfter: remainingAfterPayment(money(grandTotal), money(amountPaid)),
       };
     },
-    { timeout: 20_000 },
   );
 
   // Proof file cleanup AFTER commit — best-effort, the row is already gone.
@@ -536,26 +559,27 @@ export async function listPayments(
   const customer = (query.customer ?? "").trim().slice(0, 100);
   const range = dateRange(query.from, query.to);
 
-  const where: Prisma.PaymentWhereInput = {
-    organizationId: ctx.scope.organizationId,
-  };
-  const invoiceWhere: Prisma.InvoiceWhereInput = {};
+  const filters: SQL[] = [eq(payments.organizationId, ctx.scope.organizationId)];
   if (invoice) {
     // Payments only exist on issued invoices — always a final number. The
     // draft numberPreview is deliberately NOT searched: previews collide
     // between neighbours (invoice N's preview is invoice N+1's number).
-    invoiceWhere.number = { contains: invoice, mode: "insensitive" as const };
+    filters.push(ilike(invoices.number, `%${invoice}%`));
   }
   if (customer) {
-    invoiceWhere.customer = { companyName: { contains: customer, mode: "insensitive" as const } };
+    filters.push(ilike(customers.companyName, `%${customer}%`));
   }
-  if (invoice || customer) where.invoice = invoiceWhere;
-  if (range) where.paymentDate = range;
+  if (range) {
+    if (range.gte) filters.push(gte(payments.paymentDate, range.gte));
+    if (range.lte) filters.push(lte(payments.paymentDate, range.lte));
+  }
+  const where = and(...filters);
 
-  const total = await db.payment.count({ where });
+  const totalRows = await db.select({ value: count() }).from(payments).where(where);
+  const total = Number(totalRows[0]?.value ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Math.max(query.page ?? 1, 1), totalPages);
-  const rows = await loadRows(where, { skip: (page - 1) * pageSize, take: pageSize });
+  const rows = await loadRows(where, { offset: (page - 1) * pageSize, limit: pageSize });
 
   return {
     rows: rows.map(toPaymentRow),
@@ -578,36 +602,43 @@ export async function getInvoicePaymentPanel(
   assertCan("payment.view", ctx.scope);
   requireOrgScope(ctx.scope);
 
-  const invoice = await db.invoice.findUnique({
-    where: { id: invoiceId },
-    select: {
-      id: true,
-      organizationId: true,
-      number: true,
-      numberPreview: true,
-      status: true,
-      grandTotal: true,
-      amountPaid: true,
-      remainingAfter: true,
-      customer: { select: { companyName: true } },
-    },
-  });
+  const invoiceRows = await db
+    .select({
+      id: invoices.id,
+      organizationId: invoices.organizationId,
+      number: invoices.number,
+      numberPreview: invoices.numberPreview,
+      status: invoices.status,
+      grandTotal: invoices.grandTotal,
+      amountPaid: invoices.amountPaid,
+      remainingAfter: invoices.remainingAfter,
+      customerCompany: customers.companyName,
+    })
+    .from(invoices)
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  const invoice = invoiceRows[0];
   if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
     throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
   }
 
-  const [rows, total] = await Promise.all([
-    loadRows({ invoiceId }, { skip: 0, take: MAX_LIST_PAGE_SIZE }),
-    db.payment.count({ where: { invoiceId } }),
+  const [rows, totalRows] = await Promise.all([
+    loadRows(eq(payments.invoiceId, invoiceId), { offset: 0, limit: MAX_LIST_PAGE_SIZE }),
+    db
+      .select({ value: count() })
+      .from(payments)
+      .where(eq(payments.invoiceId, invoiceId)),
   ]);
+  const total = Number(totalRows[0]?.value ?? 0);
   return {
     invoiceId: invoice.id,
     invoiceLabel: invoiceLabel(invoice),
-    customerName: invoice.customer.companyName,
+    customerName: invoice.customerCompany ?? "—",
     status: invoice.status,
-    grandTotal: money(invoice.grandTotal.toString()),
-    amountPaid: money(invoice.amountPaid.toString()),
-    remainingAfter: money(invoice.remainingAfter.toString()),
+    grandTotal: money(invoice.grandTotal),
+    amountPaid: money(invoice.amountPaid),
+    remainingAfter: money(invoice.remainingAfter),
     rows: rows.map(toPaymentRow),
     /** True when the riwayat hit the display cap (the sum still counts all rows). */
     truncated: total > rows.length,
@@ -631,31 +662,35 @@ export async function listPayableInvoices(
   assertCan("payment.record", ctx.scope);
   requireOrgScope(ctx.scope);
 
-  const rows = await db.invoice.findMany({
-    where: {
-      organizationId: ctx.scope.organizationId,
-      status: { in: [...PAYABLE_STATUSES] },
-    },
-    orderBy: [{ invoiceDate: "desc" }, { createdAt: "desc" }],
-    take: PAYABLE_INVOICE_LIMIT,
-    select: {
-      id: true,
-      number: true,
-      numberPreview: true,
-      status: true,
-      grandTotal: true,
-      amountPaid: true,
-      customer: { select: { companyName: true } },
-    },
-  });
+  const rows = await db
+    .select({
+      id: invoices.id,
+      number: invoices.number,
+      numberPreview: invoices.numberPreview,
+      status: invoices.status,
+      grandTotal: invoices.grandTotal,
+      amountPaid: invoices.amountPaid,
+      createdAt: invoices.createdAt,
+      customerCompany: customers.companyName,
+    })
+    .from(invoices)
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .where(
+      and(
+        eq(invoices.organizationId, ctx.scope.organizationId),
+        inArray(invoices.status, [...PAYABLE_STATUSES]),
+      ),
+    )
+    .orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt))
+    .limit(PAYABLE_INVOICE_LIMIT);
 
   return rows.map((row) => {
-    const grandTotal = money(row.grandTotal.toString());
-    const amountPaid = money(row.amountPaid.toString());
+    const grandTotal = money(row.grandTotal);
+    const amountPaid = money(row.amountPaid);
     return {
       id: row.id,
       label: invoiceLabel(row),
-      customerName: row.customer.companyName,
+      customerName: row.customerCompany ?? "—",
       status: row.status,
       grandTotal,
       amountPaid,

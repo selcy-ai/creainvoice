@@ -20,7 +20,7 @@ describe("resolveNotesTokens — every token", () => {
     const { text, unknownTokens } = resolveNotesTokens(template, {
       invoiceNumber: "INV/SB/VII/2026/001",
       referenceNumber: "5198021181",
-      customerName: "PT Dharma Polimetal Tbk",
+      customerName: "PT Cipta Karya Nusantara",
       workValue: "4500000.00",
       billingPercent: "50.00",
       grandTotal: "2250000.00",
@@ -29,7 +29,7 @@ describe("resolveNotesTokens — every token", () => {
     expect(text).toBe(
       "Penagihan Down Payment 50% dari nilai PO sebesar Rp4.500.000. " +
         "Mohon cantumkan nomor PO 5198021181 pada berita transfer ke Rp2.250.000 " +
-        "atas nama PT Dharma Polimetal Tbk, nomor invoice INV/SB/VII/2026/001.",
+        "atas nama PT Cipta Karya Nusantara, nomor invoice INV/SB/VII/2026/001.",
     );
     expect(unknownTokens).toEqual([]);
   });

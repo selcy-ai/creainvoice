@@ -13,13 +13,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { can } from "@/modules/permissions/service";
 import { getProfileByOrg } from "@/modules/profiles/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Profil Invoice — invoice-me",
+  title: "Profil Invoice — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -28,13 +27,13 @@ export default async function ProfilesPage() {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (scope) {
     const profile = await getProfileByOrg(scope.organizationId);
     if (profile) redirect(`/profiles/${profile.id}`);
   }
 
-  const mayEdit = scope ? can("org.settings.update", scope) : false;
+  const mayEdit = scope ? Boolean(scope) : false;
 
   return (
     <div className="flex flex-col gap-8">

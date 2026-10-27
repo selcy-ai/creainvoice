@@ -8,16 +8,15 @@ import { notFound, redirect } from "next/navigation";
 import { ProfileEditForm } from "@/components/profiles/profile-edit-form";
 import { Badge } from "@/components/ui/badge";
 import { isAppError } from "@/lib/errors";
-import { can } from "@/modules/permissions/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
 import { getProfileForScope, toProfileView } from "@/modules/profiles/service";
 import { getDefaultBankAccount, toBankAccountView } from "@/modules/bank-accounts/service";
 import { getDefaultSigner, toSignerView } from "@/modules/signers/service";
-import { getSession } from "@/server/session";
+import { getSession } from "@/lib/clerk";
 import { env } from "@/server/env";
 
 export const metadata: Metadata = {
-  title: "Edit Profil Invoice — invoice-me",
+  title: "Edit Profil Invoice — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -31,7 +30,7 @@ export default async function ProfileEditPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) redirect("/profiles");
 
   let profile;
@@ -43,7 +42,7 @@ export default async function ProfileEditPage({
     throw error;
   }
 
-  const mayEdit = can("org.settings.update", scope);
+  const mayEdit = Boolean(scope);
   const bankRow = await getDefaultBankAccount(scope.organizationId);
   const signerRow = await getDefaultSigner(scope.organizationId);
 

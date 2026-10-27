@@ -17,12 +17,12 @@
 // container must NOT hold the port, or the stale image would be tested).
 
 import "./setup-env";
+import { ctxFor } from "@/tests/helpers/context";
 import { expect, test, type Page } from "@playwright/test";
-import { db } from "@/server/db";
+import { db } from "@/tests/helpers/test-db";
 import { createProfile } from "@/modules/profiles/service";
 import { createBankAccount } from "@/modules/bank-accounts/service";
 import { createSigner } from "@/modules/signers/service";
-import type { OrganizationRole } from "@prisma/client";
 import { addMembership, createOrganization, createUser, type TestUser } from "../factories";
 
 let user: TestUser;
@@ -33,15 +33,9 @@ let bankSecondId: string;
 const BANK_A_NUMBER = "999888777666"; // mask ends 7666
 const BANK_B_NUMBER = "111222333456";
 
+// Change 6: flat workspace — no role tier, ctxFor carries the full scope.
 function ctx() {
-  return {
-    scope: {
-      organizationId: organizationId,
-      role: "OWNER" as OrganizationRole,
-      userId: user.id,
-    },
-    request: null,
-  };
+  return ctxFor(organizationId, user.id);
 }
 
 let organizationId: string;

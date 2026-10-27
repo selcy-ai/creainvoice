@@ -20,9 +20,9 @@ import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { parseCalendarDate, todayInJakarta } from "@/lib/date";
 import { createCustomer, type CustomerFormInput } from "@/modules/customers/service";
 import { createProfile } from "@/modules/profiles/service";
-import { db } from "@/server/db";
+import { db } from "@/tests/helpers/test-db";
 import { env } from "@/server/env";
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
 import {
   addMembership,
   createOrganization,
@@ -30,6 +30,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 // 1×1 PNG — same fixture the storage tests use.
 const PNG = Buffer.from(
@@ -128,10 +129,7 @@ beforeAll(async () => {
   org = await createOrganization("Organisasi Maintenance");
   await addMembership(owner.id, org.id, "OWNER");
 
-  const ownerCtx = {
-    scope: { organizationId: org.id, role: "OWNER" as const, userId: owner.id },
-    request: null,
-  };
+  const ownerCtx = ctxFor(org.id, owner.id);
   profileId = (await createProfile(ownerCtx, { name: "Organisasi Maintenance", code: "OM" })).id;
   customerId = (
     await createCustomer({ companyName: "PT Maintenance Nusantara" } as CustomerFormInput, ownerCtx)
@@ -306,6 +304,8 @@ describe("maintenance script — structured output", () => {
     // The run finished with the done event (no secret ever printed).
     const serialized = JSON.stringify(firstRunStdout);
     expect(serialized).not.toContain(process.env.DATABASE_URL);
-    expect(serialized).not.toContain(env.BETTER_AUTH_SECRET);
+    // Change 6: better-auth is gone; the Clerk secret is the only credential
+    // the maintenance run could ever leak, and it is never on stdout.
+    expect(serialized).not.toContain(env.CLERK_SECRET_KEY);
   });
 });

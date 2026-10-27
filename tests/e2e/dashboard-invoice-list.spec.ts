@@ -19,24 +19,24 @@
 
 import "./setup-env";
 import { expect, test, type Page } from "@playwright/test";
-import { db } from "@/server/db";
+import { db } from "@/tests/helpers/test-db";
 import { createProfile } from "@/modules/profiles/service";
 import { createCustomer, type CustomerFormInput } from "@/modules/customers/service";
 import { createDraft } from "@/modules/invoices/service";
 import { issueInvoice } from "@/modules/invoices/issue-service";
 import type { InvoiceDraftFormOutput } from "@/modules/invoices/schema";
-import type { OrganizationRole } from "@prisma/client";
 import {
   addMembership,
   createOrganization,
   createUser,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let user: TestUser;
 let organizationId: string;
 let profileId: string;
-let dharmaCustomerId: string;
+let demoCustomerId: string;
 let issuedCustomerId: string;
 let draftIssueId: string;
 let draftDeleteId: string;
@@ -46,15 +46,9 @@ let issuedNumber: string;
 /** 21 bulk drafts → 24 rows total → two pages of 20. */
 const BULK_COUNT = 21;
 
+// Change 6: flat workspace — no role tier, ctxFor carries the full scope.
 function ctx() {
-  return {
-    scope: {
-      organizationId,
-      role: "OWNER" as OrganizationRole,
-      userId: user.id,
-    },
-    request: null,
-  };
+  return ctxFor(organizationId, user.id);
 }
 
 function customerInput(name: string): CustomerFormInput {
@@ -112,8 +106,8 @@ test.describe("dashboard & invoice list end-to-end (fitur 08)", () => {
     const profile = await createProfile(ctx(), { name: "E2E Profile", code: "E8" });
     profileId = profile.id;
 
-    dharmaCustomerId = (
-      await createCustomer(customerInput("PT Dharma E2E"), ctx())
+    demoCustomerId = (
+      await createCustomer(customerInput("PT Cipta Karya Nusantara E2E"), ctx())
     ).id;
     // Separate customer for the issued invoice: number PREVIEWS collide
     // between drafts (feature 04 contract), so the row/Cmd+K hit is pinned by
@@ -130,13 +124,13 @@ test.describe("dashboard & invoice list end-to-end (fitur 08)", () => {
     }
 
     const draftIssue = await createDraft(
-      draftFor(dharmaCustomerId, "4500000", "Jasa terbitkan saya"),
+      draftFor(demoCustomerId, "4500000", "Jasa terbitkan saya"),
       ctx(),
     );
     draftIssueId = draftIssue.id;
 
     const draftDelete = await createDraft(
-      draftFor(dharmaCustomerId, "1250000", "Jasa hapus saya"),
+      draftFor(demoCustomerId, "1250000", "Jasa hapus saya"),
       ctx(),
     );
     draftDeleteId = draftDelete.id;
@@ -194,11 +188,11 @@ test.describe("dashboard & invoice list end-to-end (fitur 08)", () => {
     await login(page);
     await page.goto("/invoices");
 
-    await page.locator("#invoice-search").fill("Dharma");
+    await page.locator("#invoice-search").fill("Cipta");
     await page.getByRole("button", { name: "Terapkan" }).click();
-    await page.waitForURL(/\/invoices\?q=Dharma/);
+    await page.waitForURL(/\/invoices\?q=Cipta/);
     await expect(page.getByText("Total 2 invoice", { exact: false })).toBeVisible();
-    await expect(page.getByText("PT Dharma E2E")).toHaveCount(2);
+    await expect(page.getByText("PT Cipta Karya Nusantara E2E")).toHaveCount(2);
 
     await page.locator("#invoice-search").fill("TidakAdaSamaSekali");
     await page.getByRole("button", { name: "Terapkan" }).click();
@@ -245,7 +239,7 @@ test.describe("dashboard & invoice list end-to-end (fitur 08)", () => {
 
   test("row action menu (draft): edit/duplicate/issue/delete + dialog hapus", async ({ page }) => {
     await login(page);
-    await page.goto("/invoices?q=Dharma&status=DRAFT");
+    await page.goto("/invoices?q=Cipta&status=DRAFT");
 
     await rowFor(page, draftDeleteId).getByRole("button", { name: /Aksi invoice/ }).click();
     const menu = page.getByRole("menu");
@@ -269,7 +263,7 @@ test.describe("dashboard & invoice list end-to-end (fitur 08)", () => {
 
   test("issue dari row action benar-benar menerbitkan invoice", async ({ page }) => {
     await login(page);
-    await page.goto("/invoices?q=Dharma&status=DRAFT");
+    await page.goto("/invoices?q=Cipta&status=DRAFT");
 
     await rowFor(page, draftIssueId)
       .getByRole("button", { name: /Aksi invoice/ })

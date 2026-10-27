@@ -31,7 +31,7 @@ Tutup GA: lengkapi audit log ke 22 action, backup/restore script, README deploym
 4. **Privacy/terms page** static content Bahasa Indonesia (UU PDP).
 5. **Cookie consent**: component banner + consent store (defer analytics actual — hanya consent infrastructure).
 6. **README**: tulis ulang section deployment untuk Coolify (bukan hanya Docker Compose generic): create project, link repo, set env, deploy, verify health, scheduled backup.
-7. **Seed acceptance data** lengkap (master prompt bagian 33): super admin env, org Sigit Berkarya, profile SB (alamat Yogyakarta, WhatsApp 0851 5688 8959), bank Mandiri 1370021873449, customer PT Dharma Polimetal Tbk + PIC Abdul Aziz Purchasing, PO 5198021181 tanggal 15 Juli 2026 nilai 4.500.000, item 5 × 900.000, invoice acceptance sample DOWN_PAYMENT 50% tanggal 31 Juli 2026 → nomor `INV/SB/VII/2026/001`.
+7. **Seed acceptance data** lengkap (master prompt bagian 33): super admin env, org CreaInvoice Studio, profile SB (alamat Yogyakarta, WhatsApp 0851 5688 8959), bank Mandiri 1370021873449, customer PT Cipta Karya Nusantara + PIC Andi Wijaya Purchasing, PO 5198021181 tanggal 15 Juli 2026 nilai 4.500.000, item 5 × 900.000, invoice acceptance sample DOWN_PAYMENT 50% tanggal 31 Juli 2026 → nomor `INV/SB/VII/2026/001`.
 8. **Final E2E suite** (`tests/e2e/acceptance.spec.ts`): jalankan alur master prompt bagian 32 (11 langkah) + verifikasi PDF acceptance bagian 33.
 9. **Final Docker verification**: `docker compose up -d --build` dari bersih, semua healthcheck healthy, migration + seed jalan di entrypoint, login flow manual smoke test.
 
@@ -71,7 +71,7 @@ Tutup GA: lengkapi audit log ke 22 action, backup/restore script, README deploym
 - [ ] Cookie consent banner tampil + functional (accept/reject).
 
 **Seed acceptance**
-- [ ] Seed lengkap: org Sigit Berkarya, profile SB, bank Mandiri, customer PT Dharma Polimetal Tbk + PIC Abdul Aziz, PO 5198021181.
+- [ ] Seed lengkap: org CreaInvoice Studio, profile SB, bank Mandiri, customer PT Cipta Karya Nusantara + PIC Andi Wijaya, PO 5198021181.
 - [ ] Invoice acceptance sample: DOWN_PAYMENT 50%, tanggal 31 Juli 2026, nomor `INV/SB/VII/2026/001`, grand total 2.250.000, terbilang "Dua juta dua ratus lima puluh ribu rupiah", stamp E_METERAI.
 - [ ] PDF acceptance (dari feature 06 sample): badge DOWN PAYMENT 50%, item 5 × Rp900.000, nilai pekerjaan 4.500.000, total 2.250.000, slot e-meterai compact kiri + signature kanan, logo compact, footer PO reference, `Halaman 1 dari 1`.
 

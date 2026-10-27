@@ -14,7 +14,7 @@
 // test creates its own project and asserts only against rows it created.
 
 import { beforeAll, describe, expect, it } from "vitest";
-import { db } from "@/server/db";
+import { db } from "@/tests/helpers/test-db";
 import Decimal from "decimal.js";
 import { calculateInvoice, type InvoiceCalcInput } from "@/modules/invoices/calculation";
 import { createDraft, getDraft, updateDraft } from "@/modules/invoices/service";
@@ -28,7 +28,6 @@ import { saveBankAccount } from "@/modules/bank-accounts/service";
 import { saveSigner } from "@/modules/signers/service";
 import { addContact, updateContact } from "@/modules/customers/service";
 import { createProject } from "@/modules/projects/service";
-import type { OrganizationRole } from "@prisma/client";
 import {
   addMembership,
   createOrganization,
@@ -36,6 +35,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let owner: TestUser;
 let org: { id: string };
@@ -50,10 +50,10 @@ let bankId: string;
 let signerId: string;
 
 function ctx() {
-  return { scope: { organizationId: org.id, role: "OWNER" as OrganizationRole, userId: owner.id }, request: null };
+  return ctxFor(org.id, owner.id);
 }
 function otherCtx() {
-  return { scope: { organizationId: otherOrg.id, role: "OWNER" as OrganizationRole, userId: owner.id }, request: null };
+  return ctxFor(otherOrg.id, owner.id);
 }
 
 async function issueDraft(input: InvoiceDraftFormOutput) {
@@ -83,12 +83,12 @@ beforeAll(async () => {
   await resetDatabase();
 
   owner = await createUser({ username: "snap.owner" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Org Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(owner.id, otherOrg.id, "OWNER");
 
-  const profile = await createProfile(ctx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ctx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
   const otherProfile = await createProfile(otherCtx(), { name: "Org Lain", code: "SL" });
   otherProfileId = otherProfile.id;
@@ -152,16 +152,16 @@ beforeAll(async () => {
   );
   sameOrgOtherCustomerId = sameOrgOtherCustomer.id;
 
-  const contact = await addContact(customerId, { name: "Budi Santoso", title: "Procurement", division: "Purchasing", email: "budi@snapshot.co.id", phone: "08112345678", whatsapp: "" }, ctx());
+  const contact = await addContact(customerId, { name: "Andi Wijaya", title: "Procurement", division: "Purchasing", email: "andi@snapshot.co.id", phone: "08112345678", whatsapp: "" }, ctx());
   contactId = contact.id;
 
   const bank = await saveBankAccount(
-    { bankName: "Bank Uji", accountNumber: "1234567890123456", accountHolder: "PT Karya Nusantara", branch: "KCP Sudirman" },
+    { bankName: "Bank Uji", accountNumber: "1234567890123456", accountHolder: "PT CreaInvoice Studio", branch: "KCP Sudirman" },
     ctx(),
   );
   bankId = bank.id;
 
-  const signer = await saveSigner({ name: "Karya Nusantara", title: "Direktur", location: "Jakarta" }, ctx());
+  const signer = await saveSigner({ name: "CreaInvoice Studio", title: "Direktur", location: "Jakarta" }, ctx());
   signerId = signer.id;
 }, 60_000);
 
@@ -369,7 +369,7 @@ describe("draft-to-issue reassignment", () => {
     const customerSnap = JSON.parse(JSON.stringify(issued.customerSnapshot));
     // The profile does not change (one profile per org) but it is still
     // captured from the live row at issue.
-    expect(issuerSnap.name).toBe("Karya Nusantara");
+    expect(issuerSnap.name).toBe("CreaInvoice Studio");
     expect(issuerSnap.code).toBe("SB");
     expect(customerSnap.companyName).toBe("PT Snapshot Sama Org");
     expect(customerSnap.taxId).toBe("04.5555.6666.000006");
@@ -404,27 +404,27 @@ describe("immutability after issue", () => {
   }
 
   async function restoreMasters() {
-    await updateProfile(profileId, { name: "Karya Nusantara", address: null, primaryColor: "#2563eb" }, ctx());
+    await updateProfile(profileId, { name: "CreaInvoice Studio", address: null, primaryColor: "#2563eb" }, ctx());
     await updateCustomer(customerId, { companyName: "PT Snapshot Nusantara", address: "" }, ctx());
     await saveBankAccount(
-      { bankName: "Bank Uji", accountNumber: "1234567890123456", accountHolder: "PT Karya Nusantara", branch: "KCP Sudirman" },
+      { bankName: "Bank Uji", accountNumber: "1234567890123456", accountHolder: "PT CreaInvoice Studio", branch: "KCP Sudirman" },
       ctx(),
     );
-    await saveSigner({ name: "Karya Nusantara", title: "Direktur", location: "Jakarta" }, ctx());
-    await updateContact(contactId, { name: "Budi Santoso", title: "Procurement", division: "Purchasing", email: "budi@snapshot.co.id", phone: "08112345678", whatsapp: "" }, ctx());
+    await saveSigner({ name: "CreaInvoice Studio", title: "Direktur", location: "Jakarta" }, ctx());
+    await updateContact(contactId, { name: "Andi Wijaya", title: "Procurement", division: "Purchasing", email: "andi@snapshot.co.id", phone: "08112345678", whatsapp: "" }, ctx());
   }
 
   it("issuer/customer/bank/signer/contact edits after issue never leak into the document", async () => {
     const { draft, detailBefore } = await freezeEverything();
     try {
-      await updateProfile(profileId, { name: "Karya Nusantara Ubah", address: "Alamat BARU", primaryColor: "#ff0000" }, ctx());
+      await updateProfile(profileId, { name: "CreaInvoice Studio Ubah", address: "Alamat BARU", primaryColor: "#ff0000" }, ctx());
       await updateCustomer(customerId, { companyName: "PT Snapshot Diubah", address: "Alamat BARU customer" }, ctx());
       await saveBankAccount(
         { bankName: "Bank Diubah", accountNumber: "9999999999999999", accountHolder: "PT Diubah", branch: "BARU" },
         ctx(),
       );
-      await saveSigner({ name: "Budi Diubah", title: "Direktur BARU", location: "Bandung" }, ctx());
-      await updateContact(contactId, { name: "Budi Diubah", title: "Manager BARU", division: "Divisi BARU", email: "budi@diubah.co.id" }, ctx());
+      await saveSigner({ name: "Andi Diubah", title: "Direktur BARU", location: "Bandung" }, ctx());
+      await updateContact(contactId, { name: "Andi Diubah", title: "Manager BARU", division: "Divisi BARU", email: "andi@diubah.co.id" }, ctx());
 
       const detail = await getInvoiceDetail(draft.id, ctx());
       expect(detail.fromSnapshot).toBe(true);
@@ -440,7 +440,7 @@ describe("immutability after issue", () => {
       expect(detail.contact?.division).toBe(detailBefore.contact?.division);
 
       // The masters really did change — so the assertion above is meaningful.
-      expect(((await db.invoiceProfile.findUnique({ where: { id: profileId } }))!).name).toBe("Karya Nusantara Ubah");
+      expect(((await db.invoiceProfile.findUnique({ where: { id: profileId } }))!).name).toBe("CreaInvoice Studio Ubah");
       expect(((await db.customer.findUnique({ where: { id: customerId } }))!).companyName).toBe("PT Snapshot Diubah");
     } finally {
       await restoreMasters();
@@ -525,7 +525,7 @@ describe("absent-at-issue snapshots", () => {
       { bankName: "Bank Diubah Lagi", accountNumber: "9988776655443322", accountHolder: "PT Diubah Lagi" },
       ctx(),
     );
-    await saveSigner({ name: "Budi Diubah Lagi", title: "Direktur", location: "Jakarta" }, ctx());
+    await saveSigner({ name: "Andi Diubah Lagi", title: "Direktur", location: "Jakarta" }, ctx());
     await updateContact(contact.id, { name: "Contact Diubah" }, ctx());
 
     const detail = await getInvoiceDetail(draft.id, ctx());
@@ -539,7 +539,7 @@ describe("absent-at-issue snapshots", () => {
 
     // The detail view still renders the other frozen data.
     expect(detail.calc.grandTotal).toBe("4750000.00");
-    expect(detail.issuer.name).toBe("Karya Nusantara");
+    expect(detail.issuer.name).toBe("CreaInvoice Studio");
   });
 });
 

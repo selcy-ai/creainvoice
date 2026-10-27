@@ -20,8 +20,9 @@
 import { log } from "@/modules/audit/service";
 import Decimal from "decimal.js";
 import { AppError } from "@/lib/errors";
+import type { WorkspaceScope } from "@/modules/workspace/service";
 import { parseCalendarDate, toCalendarInput, todayInJakarta } from "@/lib/date";
-import { assertCan, requireOrgScope } from "@/modules/permissions/service";
+import { assertCan, requireOrgScope } from "@/modules/workspace/permissions";
 import { buildNumberPreview, sequenceKeyFor } from "@/modules/invoices/numbering";
 import {
   BILLED_STATUSES,
@@ -43,24 +44,27 @@ import {
   type InvoiceProfileSettings,
 } from "@/modules/profiles/settings";
 import { logger } from "@/server/logger";
-import { db } from "@/server/db";
-import type {
-  Invoice,
-  InvoiceItem,
-  InvoiceType,
-  OrganizationRole,
-  Prisma,
-  ReferenceType,
-  SequenceResetPolicy,
-  TaxMode,
-} from "@prisma/client";
+import { db, type Database } from "@/server/db";
+import {
+  bankAccounts,
+  customerContacts,
+  customers,
+  invoiceItems,
+  invoiceProfiles,
+  invoiceSequences,
+  invoices,
+  projectReferences,
+  signers,
+} from "@/db/schema";
+import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import type { InvoiceType, ReferenceType, SequenceResetPolicy, TaxMode } from "@/db/enums";
 
 export { MAX_INVOICE_ITEMS } from "@/modules/invoices/schema";
 
 // ─── Service context ──────────────────────────────────────────────────────
 
 export interface InvoiceServiceContext {
-  scope: { organizationId: string; role: OrganizationRole; userId: string };
+  scope: WorkspaceScope;
   request?: Request | null;
 }
 
@@ -117,7 +121,7 @@ export interface InvoiceDraftView {
   invoiceType: InvoiceType;
   number: string | null;
   numberPreview: string | null;
-  profile: DraftProfileView;
+  profile: DraftProfileView | null;
   customer: DraftPartyView | null;
   customerContactId: string | null;
   contactName: string | null;
@@ -180,40 +184,16 @@ export interface InvoiceListItem {
 }
 
 type InvoiceWithRelations = Invoice & {
-  profile: {
-    id: string;
-    name: string;
-    legalName: string | null;
-    code: string;
-    logoPath: string | null;
-    primaryColor: string;
-    address: string | null;
-    phone: string | null;
-    whatsapp: string | null;
-    fax: string | null;
-    email: string | null;
-    website: string | null;
-    taxId: string | null;
-    numberPattern: string;
-    settings: Prisma.JsonValue;
-  };
-  customer: {
-    id: string;
-    companyName: string;
-    address: string | null;
-    city: string | null;
-    province: string | null;
-    postalCode: string | null;
-    country: string | null;
-    phone: string | null;
-    email: string | null;
-    taxId: string | null;
-  } | null;
-  customerContact: { id: string; name: string } | null;
-  projectReference: { id: string; title: string } | null;
+  profile: typeof invoiceProfiles.$inferSelect | null;
+  customer: typeof customers.$inferSelect | null;
+  customerContact: { id: string; name: string; title: string | null; division: string | null } | null;
+  projectReference: { id: string; title: string; referenceNumber: string } | null;
   items: InvoiceItem[];
 };
 export type { InvoiceWithRelations };
+
+type Invoice = typeof invoices.$inferSelect;
+type InvoiceItem = typeof invoiceItems.$inferSelect;
 
 const draftInclude = {
   profile: true,
@@ -221,7 +201,7 @@ const draftInclude = {
   customerContact: { select: { id: true, name: true } },
   projectReference: { select: { id: true, title: true } },
   items: { orderBy: { position: "asc" as const } },
-} satisfies Prisma.InvoiceInclude;
+};
 
 /** Re-run the calculation engine over persisted rows (Decimal → string).
  * `previouslyBilled` overrides the stored column — the issue flow passes the
@@ -261,24 +241,26 @@ export function toDraftView(invoice: InvoiceWithRelations): InvoiceDraftView {
     invoiceType: invoice.invoiceType,
     number: invoice.number,
     numberPreview: invoice.numberPreview,
-    profile: {
-      id: invoice.profile.id,
-      name: invoice.profile.name,
-      legalName: invoice.profile.legalName,
-      code: invoice.profile.code,
-      logoPath: invoice.profile.logoPath,
-      primaryColor: invoice.profile.primaryColor,
-      address: invoice.profile.address,
-      phone: invoice.profile.phone,
-      whatsapp: invoice.profile.whatsapp,
-      fax: invoice.profile.fax,
-      email: invoice.profile.email,
-      website: invoice.profile.website,
-      taxId: invoice.profile.taxId,
-      numberPattern: invoice.profile.numberPattern,
-      numberPreview: invoice.numberPreview,
-      settings: parseProfileSettings(invoice.profile.settings),
-    },
+    profile: invoice.profile
+      ? ({
+          id: invoice.profile.id,
+          name: invoice.profile.name,
+          legalName: invoice.profile.legalName,
+          code: invoice.profile.code,
+          logoPath: invoice.profile.logoPath,
+          primaryColor: invoice.profile.primaryColor,
+          address: invoice.profile.address,
+          phone: invoice.profile.phone,
+          whatsapp: invoice.profile.whatsapp,
+          fax: invoice.profile.fax,
+          email: invoice.profile.email,
+          website: invoice.profile.website,
+          taxId: invoice.profile.taxId,
+          numberPattern: invoice.profile.numberPattern,
+          numberPreview: invoice.numberPreview,
+          settings: parseProfileSettings(invoice.profile.settings),
+        } as DraftProfileView)
+      : null,
     customer: invoice.customer
       ? {
           id: invoice.customer.id,
@@ -346,7 +328,8 @@ export function toDraftView(invoice: InvoiceWithRelations): InvoiceDraftView {
 // ─── Guards ────────────────────────────────────────────────────────────────
 
 async function getDraftRow(invoiceId: string, ctx: InvoiceServiceContext): Promise<Invoice> {
-  const invoice = await db.invoice.findUnique({ where: { id: invoiceId } });
+  const rows = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  const invoice = rows[0];
   if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
     // Same answer as a missing row — no cross-tenant existence leak (IDOR).
     throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
@@ -372,7 +355,12 @@ async function resolveRelations(
 ): Promise<void> {
   // Profile: must belong to the org (feature 02's service exposes getProfileForScope
   // through db reads; inline scoped read keeps the cross-module surface small).
-  const profile = await db.invoiceProfile.findUnique({ where: { id: values.profileId } });
+  const profileRows = await db
+    .select({ id: invoiceProfiles.id, organizationId: invoiceProfiles.organizationId })
+    .from(invoiceProfiles)
+    .where(eq(invoiceProfiles.id, values.profileId))
+    .limit(1);
+  const profile = profileRows[0];
   if (!profile || profile.organizationId !== ctx.scope.organizationId) {
     throw new AppError("NOT_FOUND", "Profil invoice tidak ditemukan.");
   }
@@ -380,9 +368,12 @@ async function resolveRelations(
   await getCustomerForScope(values.customerId, ctx);
 
   if (values.customerContactId) {
-    const contact = await db.customerContact.findUnique({
-      where: { id: values.customerContactId },
-    });
+    const contactRows = await db
+      .select({ customerId: customerContacts.customerId })
+      .from(customerContacts)
+      .where(eq(customerContacts.id, values.customerContactId))
+      .limit(1);
+    const contact = contactRows[0];
     if (!contact || contact.customerId !== values.customerId) {
       throw new AppError("NOT_FOUND", "PIC tidak ditemukan untuk customer ini.");
     }
@@ -393,14 +384,24 @@ async function resolveRelations(
   }
 
   if (values.bankAccountId) {
-    const bank = await db.bankAccount.findUnique({ where: { id: values.bankAccountId } });
+    const bankRows = await db
+      .select({ organizationId: bankAccounts.organizationId })
+      .from(bankAccounts)
+      .where(eq(bankAccounts.id, values.bankAccountId))
+      .limit(1);
+    const bank = bankRows[0];
     if (!bank || bank.organizationId !== ctx.scope.organizationId) {
       throw new AppError("NOT_FOUND", "Rekening tidak ditemukan.");
     }
   }
 
   if (values.signerId) {
-    const signer = await db.signer.findUnique({ where: { id: values.signerId } });
+    const signerRows = await db
+      .select({ organizationId: signers.organizationId })
+      .from(signers)
+      .where(eq(signers.id, values.signerId))
+      .limit(1);
+    const signer = signerRows[0];
     if (!signer || signer.organizationId !== ctx.scope.organizationId) {
       throw new AppError("NOT_FOUND", "Penanda tangan tidak ditemukan.");
     }
@@ -429,7 +430,7 @@ async function computePreviouslyBilled(
 
 type DraftScalarData = Partial<
   Omit<
-    Prisma.InvoiceUncheckedCreateInput,
+    typeof invoices.$inferInsert,
     | "id"
     | "organizationId"
     | "createdById"
@@ -438,13 +439,12 @@ type DraftScalarData = Partial<
     | "number"
     | "numberPreview"
     | "amountPaid"
-    | "items"
   >
 > &
   // normalizeValues always produces these — keep them required so the object
-  // spreads into InvoiceUncheckedCreateInput without an `undefined` widening.
+  // spreads into the insert without an `undefined` widening.
   Pick<
-    Prisma.InvoiceUncheckedCreateInput,
+    typeof invoices.$inferInsert,
     "invoiceType" | "invoiceDate" | "workValue" | "itemsSubtotal" | "billingBase" | "grandTotal"
   >;
 
@@ -613,11 +613,43 @@ function assertOverridePermissions(values: InvoiceDraftFormOutput): void {
 async function loadDraftFull(invoiceId: string, ctx: InvoiceServiceContext): Promise<InvoiceDraftView> {
   // IDOR guard runs inside getDraftRow before the joined read is used.
   await getDraftRow(invoiceId, ctx);
-  const invoice = (await db.invoice.findUnique({
-    where: { id: invoiceId },
-    include: draftInclude,
-  })) as InvoiceWithRelations | null;
-  if (!invoice) throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
+  const joined = await db
+    .select({
+      invoice: invoices,
+      profile: invoiceProfiles,
+      customer: customers,
+      customerContact: customerContacts,
+      projectReference: projectReferences,
+      items: invoiceItems,
+    })
+    .from(invoices)
+    .leftJoin(invoiceProfiles, eq(invoiceProfiles.id, invoices.profileId))
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .leftJoin(customerContacts, eq(customerContacts.id, invoices.customerContactId))
+    .leftJoin(projectReferences, eq(projectReferences.id, invoices.projectReferenceId))
+    .leftJoin(
+      invoiceItems,
+      and(eq(invoiceItems.invoiceId, invoices.id)),
+    )
+    .where(eq(invoices.id, invoiceId))
+    .orderBy(asc(invoiceItems.position));
+  const first = joined[0];
+  if (!first) throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
+  const items = joined
+    .filter((row) => row.items !== null)
+    .map((row) => row.items as NonNullable<typeof row.items>);
+  const invoice = {
+    ...first.invoice,
+    profile: first.profile,
+    customer: first.customer,
+    customerContact: first.customerContact
+      ? { id: first.customerContact.id, name: first.customerContact.name }
+      : null,
+    projectReference: first.projectReference
+      ? { id: first.projectReference.id, title: first.projectReference.title }
+      : null,
+    items,
+  } as unknown as InvoiceWithRelations;
   return toDraftView(invoice);
 }
 
@@ -646,46 +678,61 @@ export async function createDraft(
   const previouslyBilled = await computePreviouslyBilled(ctx, values.projectReferenceId || null);
   const normalized = normalizeValues(values, previouslyBilled);
 
-  const invoice = await db.$transaction(async (tx) => {
-    const created = await tx.invoice.create({
-      data: {
+  let createdId: string | null = null;
+  await db.transaction(async (tx) => {
+    const created = await tx
+      .insert(invoices)
+      .values({
         organizationId: ctx.scope.organizationId,
         createdById: ctx.scope.userId,
         status: "DRAFT",
         currency: "IDR",
         ...normalized.data,
         ...relationScalars(values),
-        items: {
-          create: normalized.items.map((item) => ({
-            ...item,
-            metadata: undefined,
-          })),
-        },
-      },
-      select: { id: true },
-    });
+      })
+      .returning({ id: invoices.id });
+    const rowId = created[0]?.id ?? null;
+    if (!rowId) {
+      throw new AppError("INTERNAL_ERROR", "Draft invoice gagal dibuat.");
+    }
+    if (normalized.items.length > 0) {
+      await tx.insert(invoiceItems).values(
+        normalized.items.map((item) => ({ invoiceId: rowId, ...item })),
+      );
+    }
+    createdId = rowId;
 
-    const profile = await tx.invoiceProfile.findUniqueOrThrow({
-      where: { id: values.profileId },
-      select: { id: true, code: true, numberPattern: true, sequenceResetPolicy: true },
-    });
+    const profileRows = await tx
+      .select({
+        id: invoiceProfiles.id,
+        code: invoiceProfiles.code,
+        numberPattern: invoiceProfiles.numberPattern,
+        sequenceResetPolicy: invoiceProfiles.sequenceResetPolicy,
+      })
+      .from(invoiceProfiles)
+      .where(eq(invoiceProfiles.id, values.profileId))
+      .limit(1);
+    const profile = profileRows[0];
+    if (!profile) {
+      throw new AppError("NOT_FOUND", "Profil invoice tidak ditemukan.");
+    }
     const numberPreview = await buildNumberPreview(profile, normalized.data.invoiceDate as Date, tx);
-    await tx.invoice.update({ where: { id: created.id }, data: { numberPreview } });
-
-    return created;
+    await tx.update(invoices).set({ numberPreview }).where(eq(invoices.id, createdId));
   });
-
+  if (!createdId) {
+    throw new AppError("INTERNAL_ERROR", "Draft invoice gagal dibuat.");
+  }
   await log({
     actorUserId: ctx.scope.userId,
     organizationId: ctx.scope.organizationId,
     action: "INVOICE_DRAFT_CREATED",
     entityType: "invoice",
-    entityId: invoice.id,
+    entityId: createdId,
     metadata: { invoiceType: values.invoiceType, itemCount: normalized.items.length },
     request: ctx.request ?? null,
   });
 
-  return loadDraftFull(invoice.id, ctx);
+  return loadDraftFull(createdId, ctx);
 }
 
 export async function updateDraft(
@@ -707,29 +754,39 @@ export async function updateDraft(
   );
   const normalized = normalizeValues(values, previouslyBilled);
 
-  await db.$transaction(async (tx) => {
-    await tx.invoice.update({
-      where: { id: invoiceId },
-      data: {
+  await db.transaction(async (tx) => {
+    await tx
+      .update(invoices)
+      .set({
         ...normalized.data,
         ...relationScalars(values),
-      },
-    });
+      })
+      .where(eq(invoices.id, invoiceId));
     // Items are small and fully replaced on every autosave (position order
     // is the item array order — drag reorder is just an array move).
-    await tx.invoiceItem.deleteMany({ where: { invoiceId } });
+    await tx.delete(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
     if (normalized.items.length > 0) {
-      await tx.invoiceItem.createMany({
-        data: normalized.items.map((item) => ({ invoiceId, ...item })),
-      });
+      await tx.insert(invoiceItems).values(
+        normalized.items.map((item) => ({ invoiceId, ...item })),
+      );
     }
 
-    const profile = await tx.invoiceProfile.findUniqueOrThrow({
-      where: { id: values.profileId },
-      select: { id: true, code: true, numberPattern: true, sequenceResetPolicy: true },
-    });
+    const profileRows = await tx
+      .select({
+        id: invoiceProfiles.id,
+        code: invoiceProfiles.code,
+        numberPattern: invoiceProfiles.numberPattern,
+        sequenceResetPolicy: invoiceProfiles.sequenceResetPolicy,
+      })
+      .from(invoiceProfiles)
+      .where(eq(invoiceProfiles.id, values.profileId))
+      .limit(1);
+    const profile = profileRows[0];
+    if (!profile) {
+      throw new AppError("NOT_FOUND", "Profil invoice tidak ditemukan.");
+    }
     const numberPreview = await buildNumberPreview(profile, normalized.data.invoiceDate as Date, tx);
-    await tx.invoice.update({ where: { id: invoiceId }, data: { numberPreview } });
+    await tx.update(invoices).set({ numberPreview }).where(eq(invoices.id, invoiceId));
   });
 
   // Audit the FIELDS that changed (names only — no customer PII, no amounts).
@@ -800,7 +857,7 @@ export async function deleteDraft(invoiceId: string, ctx: InvoiceServiceContext)
   const invoice = await getDraftRow(invoiceId, ctx);
   assertDraftEditable(invoice);
 
-  await db.invoice.delete({ where: { id: invoice.id } });
+  await db.delete(invoices).where(eq(invoices.id, invoice.id));
   await log({
     actorUserId: ctx.scope.userId,
     organizationId: ctx.scope.organizationId,
@@ -823,20 +880,32 @@ export async function listDrafts(
   requireOrgScope(ctx.scope);
   const pageSize = Math.min(Math.max(query.pageSize ?? 20, 1), 100);
 
-  const where: Prisma.InvoiceWhereInput = {
-    organizationId: ctx.scope.organizationId,
-    status: "DRAFT",
-  };
-  const total = await db.invoice.count({ where });
+  const where = and(
+    eq(invoices.organizationId, ctx.scope.organizationId),
+    eq(invoices.status, "DRAFT"),
+  );
+  const totalRows = await db.select({ value: count() }).from(invoices).where(where);
+  const total = Number(totalRows[0]?.value ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Math.max(query.page ?? 1, 1), totalPages);
-  const rows = await db.invoice.findMany({
-    where,
-    orderBy: { updatedAt: "desc" },
-    skip: (page - 1) * pageSize,
-    take: pageSize,
-    include: { customer: { select: { companyName: true } } },
-  });
+  const rows = await db
+    .select({
+      id: invoices.id,
+      numberPreview: invoices.numberPreview,
+      number: invoices.number,
+      invoiceType: invoices.invoiceType,
+      grandTotal: invoices.grandTotal,
+      currency: invoices.currency,
+      invoiceDate: invoices.invoiceDate,
+      updatedAt: invoices.updatedAt,
+      customerCompany: customers.companyName,
+    })
+    .from(invoices)
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .where(where)
+    .orderBy(desc(invoices.updatedAt))
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
 
   return {
     rows: rows.map((row) => ({
@@ -844,8 +913,8 @@ export async function listDrafts(
       numberPreview: row.numberPreview,
       number: row.number,
       invoiceType: row.invoiceType,
-      customerName: row.customer?.companyName ?? "—",
-      grandTotal: row.grandTotal.toString(),
+      customerName: row.customerCompany ?? "—",
+      grandTotal: row.grandTotal,
       currency: row.currency,
       invoiceDate: toCalendarInput(row.invoiceDate.toISOString()),
       updatedAt: row.updatedAt.toISOString(),
@@ -917,52 +986,74 @@ export async function nextSequenceHint(
   invoiceDate: Date,
 ): Promise<number> {
   const key = sequenceKeyFor(profile.sequenceResetPolicy, invoiceDate);
-  const bucket = await db.invoiceSequence.findUnique({
-    where: { invoiceProfileId_sequenceKey: { invoiceProfileId: profile.id, sequenceKey: key } },
-    select: { currentValue: true },
-  });
-  return (bucket?.currentValue ?? 0) + 1;
+  const bucketRows = await db
+    .select({ currentValue: invoiceSequences.currentValue })
+    .from(invoiceSequences)
+    .where(
+      and(
+        eq(invoiceSequences.invoiceProfileId, profile.id),
+        eq(invoiceSequences.sequenceKey, key),
+      ),
+    )
+    .limit(1);
+  return (bucketRows[0]?.currentValue ?? 0) + 1;
 }
 
 export async function getEditorOptions(ctx: InvoiceServiceContext): Promise<EditorOptions> {
   requireOrgScope(ctx.scope);
-  const profiles = await db.invoiceProfile.findMany({
-    where: { organizationId: ctx.scope.organizationId, isActive: true },
-    orderBy: { createdAt: "asc" },
-  });
+  const profileRows = await db
+    .select()
+    .from(invoiceProfiles)
+    .where(
+      and(
+        eq(invoiceProfiles.organizationId, ctx.scope.organizationId),
+        eq(invoiceProfiles.isActive, true),
+      ),
+    )
+    .orderBy(asc(invoiceProfiles.createdAt));
   const banks = await listBankAccounts(ctx.scope.organizationId);
   const signers = await listSigners(ctx.scope.organizationId);
   // Customer dropdown: active customers only (soft-deleted rows are hidden from
   // every read path — a draft can never point at a deleted customer).
-  const customers = await db.customer.findMany({
-    where: { organizationId: ctx.scope.organizationId, deletedAt: null },
-    orderBy: { companyName: "asc" },
-    take: 200,
-    select: { id: true, companyName: true },
-  });
-  // Project dropdown + settlement context in one round-trip: every project of
-  // the org with the sum of its ISSUED-and-later invoices (0 while feature 05
-  // adds no issue flow — the wiring is real, the honest answer is 0).
-  const projects = await db.projectReference.findMany({
-    where: { organizationId: ctx.scope.organizationId },
-    orderBy: { updatedAt: "desc" },
-    take: 200,
-    select: {
-      id: true,
-      title: true,
-      referenceType: true,
-      referenceNumber: true,
-      referenceDate: true,
-      customerId: true,
-      currency: true,
-      workValue: true,
-      customer: { select: { companyName: true } },
-      invoices: {
-        where: { status: { in: [...BILLED_STATUSES] } },
-        select: { grandTotal: true },
-      },
-    },
-  });
+  const customerRows = await db
+    .select({ id: customers.id, companyName: customers.companyName })
+    .from(customers)
+    .where(
+      and(
+        eq(customers.organizationId, ctx.scope.organizationId),
+        isNull(customers.deletedAt),
+      ),
+    )
+    .orderBy(asc(customers.companyName))
+    .limit(200);
+  // Project dropdown + settlement context: every project of the org with the
+  // sum of its ISSUED-and-later invoices (the settlement view's "sudah
+  // ditagihkan", invariant 6).
+  const projectRows = await db
+    .select({
+      project: projectReferences,
+      customerCompany: customers.companyName,
+      invoiceTotals: invoices.grandTotal,
+    })
+    .from(projectReferences)
+    .leftJoin(customers, eq(customers.id, projectReferences.customerId))
+    .leftJoin(
+      invoices,
+      and(
+        eq(invoices.projectReferenceId, projectReferences.id),
+        inArray(invoices.status, [...BILLED_STATUSES]),
+      ),
+    )
+    .where(eq(projectReferences.organizationId, ctx.scope.organizationId))
+    .orderBy(desc(projectReferences.updatedAt))
+    .limit(200);
+  const profiles = profileRows;
+  const projectGroups = new Map<string, Decimal>();
+  for (const row of projectRows) {
+    const key = row.project.id;
+    const current = projectGroups.get(key) ?? new Decimal(0);
+    projectGroups.set(key, row.invoiceTotals === null ? current : current.plus(row.invoiceTotals));
+  }
   // Default bank/signer ride along from the active profile (feature 02) —
   // the editor applies them when the user picks a profile.
   return {
@@ -992,23 +1083,23 @@ export async function getEditorOptions(ctx: InvoiceServiceContext): Promise<Edit
     })),
     banks,
     signers,
-    customers: customers.map((customer) => ({
+    customers: customerRows.map((customer) => ({
       id: customer.id,
       companyName: customer.companyName,
     })),
-    projects: projects.map((project) => ({
-      id: project.id,
-      title: project.title,
-      referenceType: project.referenceType,
-      referenceNumber: project.referenceNumber,
-      referenceDate: project.referenceDate ? toCalendarInput(project.referenceDate.toISOString()) : null,
-      customerId: project.customerId,
-      customerName: project.customer.companyName,
-      workValue: project.workValue.toString(),
-      currency: project.currency,
-      previouslyBilled: project.invoices
-        .reduce((sum, row) => sum.plus(row.grandTotal.toString()), new Decimal(0))
-        .toFixed(2),
+    projects: projectRows.map((row) => ({
+      id: row.project.id,
+      title: row.project.title,
+      referenceType: row.project.referenceType,
+      referenceNumber: row.project.referenceNumber,
+      referenceDate: row.project.referenceDate
+        ? toCalendarInput(row.project.referenceDate.toISOString())
+        : null,
+      customerId: row.project.customerId,
+      customerName: row.customerCompany ?? "",
+      workValue: row.project.workValue,
+      currency: row.project.currency,
+      previouslyBilled: (projectGroups.get(row.project.id) ?? new Decimal(0)).toFixed(2),
     })),
   };
 }
@@ -1026,10 +1117,18 @@ export async function getDraftNumberPreview(
 ): Promise<string | null> {
   assertCan("invoice.draft.read", ctx.scope);
   requireOrgScope(ctx.scope);
-  const profile = await db.invoiceProfile.findUnique({
-    where: { id: profileId },
-    select: { id: true, organizationId: true, code: true, numberPattern: true, sequenceResetPolicy: true },
-  });
+  const profileRows = await db
+    .select({
+      id: invoiceProfiles.id,
+      organizationId: invoiceProfiles.organizationId,
+      code: invoiceProfiles.code,
+      numberPattern: invoiceProfiles.numberPattern,
+      sequenceResetPolicy: invoiceProfiles.sequenceResetPolicy,
+    })
+    .from(invoiceProfiles)
+    .where(eq(invoiceProfiles.id, profileId))
+    .limit(1);
+  const profile = profileRows[0];
   if (!profile || profile.organizationId !== ctx.scope.organizationId) {
     throw new AppError("NOT_FOUND", "Profil invoice tidak ditemukan.");
   }

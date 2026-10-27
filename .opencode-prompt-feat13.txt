@@ -1,0 +1,19 @@
+Build change spec 13-change-creainvoice-clerk-neon-drizzle.
+
+This is the /selcy-implement flow. Steps:
+1. Read AGENTS.md at the project root, then the context files it names in order, then context/feature-specs/13-change-creainvoice-clerk-neon-druffle.md — wait, the exact file is context/feature-specs/13-change-creainvoice-clerk-neon-drizzle.md. That one spec is your whole scope. Do not read other feature specs.
+2. Run the input coverage gate before writing code.
+3. Build in the order the spec's Implementation section names: branding rename first (mechanical), then personal-data replacement in seed + tests + context files, then auth swap to Clerk (remove better-auth, admin, organizations, permissions modules and /admin/* platform pages), then Prisma to Drizzle with Neon, then seed rewrite, then update the context bundle.
+4. Environment facts you need:
+   - Clerk application id: app_3LF40VVKeESi40CqagUuxiBaq5X (already created in the engineer's dashboard). Use @clerk/nextjs. Enable Clerk Organizations.
+   - Neon project id lucky-hall-99090018, PG16, region Singapore. Connection string role neondb_owner, database inv-me, pooled endpoint. The DATABASE_URL is in .env (read it from there; never print it in full).
+   - Local dev AND tests connect to Neon (engineer chose this, not a local Docker postgres).
+   - Deployment target is Vercel, but deployment itself is out of scope for this change.
+5. Auth rules: remove PlatformRole and the platform super-admin concept. Every user is a full admin of their own Clerk organization workspace. Keep invites via Clerk Organizations. Session reads via auth(); webhook at src/app/api/clerk/webhook/route.ts syncs user + organization membership rows into the database.
+6. Existing better-auth password hashes cannot migrate — every existing user must reset a password via Clerk. That is agreed, do not try to port hashes.
+7. Schema: drop OrganizationRole and role tiers from Membership; keep the organization as a flat workspace. Fresh start on data — the local database contains fixtures, not production data.
+8. Run every Check When Done item: npm run build, npm run lint, npm run typecheck, the unit+integration suite (green, target around the current count — tests that specifically test the removed admin/platform/auth modules should be removed or rewritten, not left red), and E2E login via Clerk.
+9. Update context/progress-tracker.md per the spec Progress Tracker section.
+10. Commit and Push: trunk-based on main, message "feat: rebrand to creainvoice + migrate auth to Clerk and DB to Neon/Drizzle", tag feat-13, push origin main (git push works with default credentials; the remote is https://github.com/selcy-ai/creainvoice.git).
+
+A red test or failed check is a stop condition. Do not commit around failures. If a Check When Done item cannot pass because the spec is wrong, stop and say so. If you hit a provider or infra error, retry conservatively and report state.

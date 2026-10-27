@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Masuk — invoice-me",
+  title: "Masuk — CreaInvoice",
 };
 
 export default function AuthLayout({
@@ -14,10 +14,10 @@ export default function AuthLayout({
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-2 text-center">
           <span className="text-xl font-semibold tracking-tight text-foreground">
-            invoice-me
+            CreaInvoice
           </span>
           <p className="text-sm text-muted-foreground">
-            Platform invoice self-hosted untuk bisnis Anda.
+            Platform invoice untuk bisnis Anda.
           </p>
         </div>
         {children}

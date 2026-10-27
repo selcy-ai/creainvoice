@@ -167,7 +167,7 @@ async function inlineStorageImages(html: string): Promise<string> {
  */
 export async function renderPrintHtml(data: InvoiceRendererData, baseUrl: string): Promise<string> {
   const title = data.number ?? data.numberPreview ?? "Invoice";
-  const author = data.issuer.legalName || data.issuer.name || "invoice-me";
+  const author = data.issuer.legalName || data.issuer.name || "creainvoice";
   const { renderToStaticMarkup } = await markupRenderer();
   const markup = await inlineStorageImages(renderToStaticMarkup(<InvoiceRenderer data={data} />));
   // Never let a stray "</style>" inside a stylesheet or content string end

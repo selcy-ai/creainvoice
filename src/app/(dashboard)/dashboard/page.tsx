@@ -21,11 +21,11 @@ import {
   getMonthlySeries,
   getRecentActivity,
 } from "@/modules/dashboard/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Dashboard — invoice-me",
+  title: "Dashboard — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -34,7 +34,7 @@ export default async function DashboardPage() {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) {
     return (
       <div className="flex flex-col gap-8">
@@ -63,7 +63,7 @@ export default async function DashboardPage() {
     getRecentActivity({ scope }),
   ]);
 
-  const displayName = session.user.name || session.user.username || session.user.email;
+  const displayName = session?.user?.fullName ?? session?.user?.username ?? session?.user?.primaryEmailAddress?.emailAddress ?? "Pengguna";
 
   return (
     <div className="flex flex-col gap-8">

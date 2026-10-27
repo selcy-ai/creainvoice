@@ -34,8 +34,7 @@ import {
   ONBOARDING_TOTAL_STEPS,
 } from "@/modules/onboarding/service";
 import { listSigners, saveSigner, toSignerView } from "@/modules/signers/service";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
 import {
   addMembership,
   createOrganization,
@@ -43,6 +42,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 // 1×1 PNG as a plain ArrayBuffer-backed view (File parts dislike Buffer).
 const PNG = new Uint8Array(
@@ -60,16 +60,9 @@ let viewerId: string;
 let org: { id: string };
 let otherOrg: { id: string };
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 
 function ownerCtx(organizationId?: string) {
-  return ctxFor(organizationId ?? org.id, "OWNER", owner.id);
+  return ctxFor(organizationId ?? org.id, owner.id);
 }
 
 async function expectAppFailure(promise: Promise<unknown>, code: AppError["code"]): Promise<AppError> {
@@ -89,7 +82,7 @@ beforeAll(async () => {
   await resetDatabase();
   owner = await createUser({ username: "profile.owner" });
   const viewer = await createUser({ username: "profile.viewer" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Organisasi Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(viewer.id, org.id, "VIEWER");
@@ -98,12 +91,12 @@ beforeAll(async () => {
 });
 
 function viewerCtx() {
-  return ctxFor(org.id, "VIEWER", viewerId);
+  return ctxFor(org.id, viewerId);
 }
 
 describe("invoice profile CRUD", () => {
   it("creates with data-model defaults and writes a PROFILE_CHANGED audit", async () => {
-    const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+    const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
     expect(profile.id).toBeTruthy();
     expect(profile.code).toBe("SB");
     expect(profile.numberPattern).toBe("INV/{CODE}/{ROMAN_MONTH}/{YYYY}/{SEQ:3}");
@@ -130,10 +123,10 @@ describe("invoice profile CRUD", () => {
 
     const updated = await updateProfile(
       profile!.id,
-      { legalName: "PT Karya Nusantara", address: "Jl. Merdeka No. 1, Jakarta", primaryColor: "#ff5500" },
+      { legalName: "PT CreaInvoice Studio", address: "Jl. Merdeka No. 1, Jakarta", primaryColor: "#ff5500" },
       ownerCtx(),
     );
-    expect(updated.legalName).toBe("PT Karya Nusantara");
+    expect(updated.legalName).toBe("PT CreaInvoice Studio");
     expect(updated.primaryColor).toBe("#ff5500");
 
     const audits = await db.auditLog.findMany({
@@ -163,7 +156,7 @@ describe("authorization", () => {
 
     // Nothing changed on disk-of-truth.
     const after = await getProfileForScope(profile!.id, ownerCtx());
-    expect(after.name).toBe("Karya Nusantara");
+    expect(after.name).toBe("CreaInvoice Studio");
   });
 
   it("answers 404 for a profile from another organization and for a missing id", async () => {
@@ -210,7 +203,7 @@ describe("number pattern validation (action-layer schemas)", () => {
 
   it("profileUpdateSchema (the /profiles/[id] edit) validates the pattern the same way", () => {
     const base = {
-      name: "Karya Nusantara",
+      name: "CreaInvoice Studio",
       code: "SB",
       legalName: null,
       address: null,
@@ -255,14 +248,14 @@ describe("bank account encryption at rest", () => {
         bankName: "Bank Central Asia",
         bankCode: "BCA",
         accountNumber: PLAIN_NUMBER,
-        accountHolder: "Karya Nusantara",
+        accountHolder: "CreaInvoice Studio",
         branch: "Jakarta",
       },
       ownerCtx(),
     );
 
     // Raw column value as Postgres holds it (Prisma performs no decryption).
-    const raw = await db.$queryRaw<Array<{ value: string }>>`
+    const raw = await db.$queryRaw<{ value: string }>`
       SELECT "accountNumberEncrypted" AS value FROM "BankAccount" WHERE id = ${account.id}`;
     expect(raw).toHaveLength(1);
     const storedValue = raw[0]!.value;
@@ -301,7 +294,7 @@ describe("bank account encryption at rest", () => {
         bankName: "Bank Mandiri",
         bankCode: null,
         accountNumber: "",
-        accountHolder: "Karya Nusantara",
+        accountHolder: "CreaInvoice Studio",
         branch: null,
       },
       ownerCtx(),
@@ -336,21 +329,21 @@ describe("bank account encryption at rest", () => {
 describe("signer default lifecycle", () => {
   it("creates one default signer, updates it in place, and audits", async () => {
     const first = await saveSigner(
-      { name: "Budi Santoso", title: "Direktur", location: "Jakarta" },
+      { name: "Andi Wijaya", title: "Direktur", location: "Jakarta" },
       ownerCtx(),
     );
     expect(first.isDefault).toBe(true);
     expect(first.isActive).toBe(true);
 
     const second = await saveSigner(
-      { name: "Budi Santoso, S.E.", title: "Direktur Utama", location: "Jakarta" },
+      { name: "Andi Wijaya, S.E.", title: "Direktur Utama", location: "Jakarta" },
       ownerCtx(),
     );
     expect(second.id).toBe(first.id);
     expect(await listSigners(org.id)).toHaveLength(1);
 
     const view = toSignerView(second);
-    expect(view.name).toBe("Budi Santoso, S.E.");
+    expect(view.name).toBe("Andi Wijaya, S.E.");
     expect(view.hasSignature).toBe(false);
 
     const profile = await getProfileByOrg(org.id);
@@ -364,7 +357,7 @@ describe("signer default lifecycle", () => {
 
   it("stores a signature image via the sniffed pipeline and replaces the old file", async () => {
     const withSig = await saveSigner(
-      { name: "Budi Santoso, S.E.", title: null, location: null },
+      { name: "Andi Wijaya, S.E.", title: null, location: null },
       ownerCtx(),
       { signatureFile: new File([PNG], "tanda-tangan.png", { type: "image/png" }) },
     );
@@ -375,7 +368,7 @@ describe("signer default lifecycle", () => {
     expect((await getStorageService().read(firstPath)).mimeType).toBe("image/png");
 
     const replaced = await saveSigner(
-      { name: "Budi Santoso, S.E.", title: null, location: null },
+      { name: "Andi Wijaya, S.E.", title: null, location: null },
       ownerCtx(),
       { signatureFile: new File([PNG], "ganti.png", { type: "image/png" }) },
     );

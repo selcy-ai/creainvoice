@@ -21,7 +21,7 @@ interface HealthResponse {
 async function checkDatabase(): Promise<HealthCheck> {
   const start = Date.now();
   try {
-    await db.$queryRaw`SELECT 1`;
+    await db.execute("select 1");
     return { status: "ok", latencyMs: Date.now() - start };
   } catch {
     return { status: "degraded", error: "Database unreachable" };

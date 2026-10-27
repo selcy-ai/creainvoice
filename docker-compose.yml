@@ -1,35 +1,18 @@
+# creainvoice — app + pdf-service.
+# The database is Neon Postgres (Change 6): there is no local postgres service
+# anymore; DATABASE_URL always points at the Neon pooled endpoint.
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: invoice_me
-      POSTGRES_USER: invoice
-      POSTGRES_PASSWORD: invoice
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U invoice -d invoice_me"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    restart: unless-stopped
-
   app:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://invoice:invoice@postgres:5432/invoice_me?schema=public
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
-      BETTER_AUTH_URL: ${APP_URL:-http://localhost:3000}
-      # Origins Better Auth trusts for `Origin`-checked POSTs. The SSH tunnel
-      # surfaces as http://localhost:3000 on the client; the LAN IP is the
-      # direct front door. Comma-separated, mirrors better-auth's env var.
-      BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://192.168.1.100:3000}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required (Neon pooled endpoint)}
+      # Clerk (Change 6): auth is delegated to Clerk.
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?CLERK_SECRET_KEY is required}
+      CLERK_WEBHOOK_SIGNING_SECRET: ${CLERK_WEBHOOK_SIGNING_SECRET:-}
       APP_URL: ${APP_URL:-http://localhost:3000}
       INTERNAL_PDF_SECRET: ${INTERNAL_PDF_SECRET}
       INTERNAL_APP_URL: http://app:3000
@@ -38,9 +21,6 @@ services:
       PDF_SERVICE_URL: http://pdf-service:3001
       STORAGE_ROOT: /data
       GLITCHTIP_DSN: ${GLITCHTIP_DSN:-}
-      SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-superadmin}
-      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.test}
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       BANK_ACCOUNT_ENCRYPTION_KEY: ${BANK_ACCOUNT_ENCRYPTION_KEY:?BANK_ACCOUNT_ENCRYPTION_KEY is required}
     volumes:
       - uploads:/data/uploads
@@ -51,8 +31,6 @@ services:
     ports:
       - "${APP_PORT:-3000}:3000"
     depends_on:
-      postgres:
-        condition: service_healthy
       pdf-service:
         condition: service_healthy
     healthcheck:
@@ -79,7 +57,7 @@ services:
     networks:
       - internal
     healthcheck:
-      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:3001/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:3001/health',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -98,7 +76,6 @@ services:
       - cloudflared
 
 volumes:
-  postgres-data:
   uploads:
   invoices:
   pdf-data:

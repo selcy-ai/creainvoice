@@ -26,8 +26,7 @@ import {
   getRecentActivity,
 } from "@/modules/dashboard/service";
 import { monthKeyOf } from "@/modules/dashboard/series";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
 import {
   addMembership,
   createOrganization,
@@ -35,6 +34,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let owner: TestUser;
 let viewer: TestUser;
@@ -60,16 +60,9 @@ function shift(days: number): string {
 const daysAgo = (days: number): string => shift(-days);
 const daysFromNow = (days: number): string => shift(days);
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 const ownerCtx = (organizationId?: string) =>
-  ctxFor(organizationId ?? org.id, "OWNER", owner.id);
-const viewerCtx = () => ctxFor(org.id, "VIEWER", viewer.id);
+  ctxFor(organizationId ?? org.id, owner.id);
+const viewerCtx = () => ctxFor(org.id, viewer.id);
 
 function customerInput(name: string): CustomerFormInput {
   return {
@@ -143,7 +136,7 @@ beforeAll(async () => {
   await resetDatabase();
   owner = await createUser({ username: "dash.owner" });
   viewer = await createUser({ username: "dash.viewer" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Organisasi Lain");
   emptyOrg = await createOrganization("Organisasi Kosong");
   await addMembership(owner.id, org.id, "OWNER");
@@ -151,8 +144,8 @@ beforeAll(async () => {
   await addMembership(owner.id, otherOrg.id, "OWNER");
   await addMembership(owner.id, emptyOrg.id, "OWNER");
 
-  profileId = (await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" })).id;
-  customerId = (await createCustomer(customerInput("PT Dharma Dashboard"), ownerCtx())).id;
+  profileId = (await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" })).id;
+  customerId = (await createCustomer(customerInput("PT Cipta Dashboard"), ownerCtx())).id;
 
   await make("draft1", { issue: false, invoiceDate: daysAgo(4) });
   await make("draft2", { issue: false, invoiceDate: daysAgo(5), unitPrice: "2500000" });
@@ -227,7 +220,7 @@ describe("dashboard cards (Check When Done)", () => {
     let caught: unknown = null;
     try {
       await getDashboardCards({
-        scope: { organizationId: org.id, role: null },
+        scope: { organizationId: org.id },
       });
     } catch (error) {
       caught = error;

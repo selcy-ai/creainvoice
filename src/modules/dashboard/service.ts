@@ -11,11 +11,8 @@
 
 import { todayInJakarta } from "@/lib/date";
 import { roundMoney } from "@/lib/money";
-import {
-  assertCan,
-  requireOrgScope,
-  type PermissionContext,
-} from "@/modules/permissions/service";
+import Decimal from "decimal.js";
+import { assertCan, can, requireOrgScope } from "@/modules/workspace/permissions";
 import { BILLED_STATUSES } from "@/modules/invoices/billed";
 import { OVERDUE_ELIGIBLE_STATUSES } from "@/modules/invoices/lifecycle-service";
 import {
@@ -25,7 +22,10 @@ import {
   type MonthlySeriesPoint,
 } from "@/modules/dashboard/series";
 import { db } from "@/server/db";
-import type { AuditAction, Prisma } from "@prisma/client";
+import { auditLogs, customers, invoices, payments, users } from "@/db/schema";
+import type { AuditAction } from "@/db/enums";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql, sum } from "drizzle-orm";
+import type { PermissionContext } from "@/modules/workspace/permissions";
 
 export type DashboardContext = { scope: PermissionContext };
 
@@ -69,41 +69,68 @@ export async function getDashboardCards(ctx: DashboardContext): Promise<Dashboar
   const monthEnd = new Date(Date.UTC(year, month, 1));
   const startOfToday = new Date(`${todayInJakarta(now)}T00:00:00.000Z`);
 
-  const billedWhere: Prisma.InvoiceWhereInput = {
-    organizationId,
-    status: { in: [...BILLED_STATUSES] },
-  };
-  const overdueWhere: Prisma.InvoiceWhereInput = {
-    organizationId,
-    status: { in: [...OVERDUE_ELIGIBLE_STATUSES, "OVERDUE"] },
-    dueDate: { not: null, lt: startOfToday },
-  };
+  const billedWhere = and(
+    eq(invoices.organizationId, organizationId),
+    inArray(invoices.status, [...BILLED_STATUSES]),
+  );
+  const overdueWhere = and(
+    eq(invoices.organizationId, organizationId),
+    inArray(invoices.status, [...OVERDUE_ELIGIBLE_STATUSES, "OVERDUE"]),
+    isNotNull(invoices.dueDate),
+    lt(invoices.dueDate, startOfToday),
+  );
 
-  const [invoicesThisMonth, billed, overdueCount, draftCount, customerCount] =
-    await Promise.all([
-      db.invoice.count({
-        where: { organizationId, invoiceDate: { gte: monthStart, lt: monthEnd } },
-      }),
-      db.invoice.aggregate({
-        where: billedWhere,
-        _sum: { grandTotal: true, amountPaid: true, remainingAfter: true },
-      }),
-      db.invoice.count({ where: overdueWhere }),
-      db.invoice.count({ where: { organizationId, status: "DRAFT" } }),
-      db.customer.count({ where: { organizationId, deletedAt: null } }),
-    ]);
+  const [
+    monthRows,
+    billedRows,
+    overdueRows,
+    draftRows,
+    customerRows,
+  ] = await Promise.all([
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          gte(invoices.invoiceDate, monthStart),
+          lt(invoices.invoiceDate, monthEnd),
+        ),
+      ),
+    db
+      .select({
+        grandTotal: sum(invoices.grandTotal),
+        amountPaid: sum(invoices.amountPaid),
+        remainingAfter: sum(invoices.remainingAfter),
+      })
+      .from(invoices)
+      .where(billedWhere),
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(invoices)
+      .where(overdueWhere),
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(invoices)
+      .where(and(eq(invoices.organizationId, organizationId), eq(invoices.status, "DRAFT"))),
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(customers)
+      .where(and(eq(customers.organizationId, organizationId), isNotNull(customers.deletedAt))),
+  ]);
 
-  const money = (value: { toFixed: (dp: number) => string } | null): string =>
-    value ? roundMoney(value.toFixed(2)) : "0.00";
+  const money = (value: string | null): string =>
+    value ? roundMoney(new Decimal(value).toFixed(2)) : "0.00";
 
+  const billedSums = billedRows[0];
   return {
-    invoicesThisMonth,
-    totalBilled: money(billed._sum.grandTotal),
-    totalPaid: money(billed._sum.amountPaid),
-    outstanding: money(billed._sum.remainingAfter),
-    overdueCount,
-    draftCount,
-    customerCount,
+    invoicesThisMonth: Number(monthRows[0]?.value ?? 0),
+    totalBilled: money(billedSums?.grandTotal ?? null),
+    totalPaid: money(billedSums?.amountPaid ?? null),
+    outstanding: money(billedSums?.remainingAfter ?? null),
+    overdueCount: Number(overdueRows[0]?.value ?? 0),
+    draftCount: Number(draftRows[0]?.value ?? 0),
+    customerCount: Number(customerRows[0]?.value ?? 0),
   };
 }
 
@@ -126,30 +153,37 @@ export async function getMonthlySeries(
   const keys = monthKeysBack(new Date(), months);
   const windowStart = new Date(`${keys[0]}-01T00:00:00.000Z`);
 
-  const [invoices, payments] = await Promise.all([
-    db.invoice.findMany({
-      where: {
-        organizationId,
-        invoiceDate: { gte: windowStart },
-        status: { in: [...BILLED_STATUSES] },
-      },
-      select: { invoiceDate: true, grandTotal: true },
-    }),
-    db.payment.findMany({
-      where: { organizationId, paymentDate: { gte: windowStart } },
-      select: { paymentDate: true, amount: true },
-    }),
+  const [invoiceRows, paymentRows] = await Promise.all([
+    db
+      .select({ invoiceDate: invoices.invoiceDate, grandTotal: invoices.grandTotal })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          gte(invoices.invoiceDate, windowStart),
+          inArray(invoices.status, [...BILLED_STATUSES]),
+        ),
+      ),
+    db
+      .select({ paymentDate: payments.paymentDate, amount: payments.amount })
+      .from(payments)
+      .where(
+        and(
+          eq(payments.organizationId, organizationId),
+          gte(payments.paymentDate, windowStart),
+        ),
+      ),
   ]);
 
   const points = buildMonthlySeries({
     months: keys,
-    invoices: invoices.map((row) => ({
+    invoices: invoiceRows.map((row) => ({
       date: row.invoiceDate,
-      grandTotal: row.grandTotal.toString(),
+      grandTotal: row.grandTotal,
     })),
-    payments: payments.map((row) => ({
+    payments: paymentRows.map((row) => ({
       date: row.paymentDate,
-      amount: row.amount.toString(),
+      amount: row.amount,
     })),
   });
 
@@ -196,22 +230,26 @@ export async function getRecentActivity(
   requireOrgScope(ctx.scope);
 
   const take = Math.min(Math.max(limit, 1), DASHBOARD_ACTIVITY_LIMIT);
-  const rows = await db.auditLog.findMany({
-    where: {
-      organizationId: ctx.scope.organizationId,
-      action: { in: DASHBOARD_ACTIVITY_ACTIONS },
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take,
-    select: {
-      id: true,
-      action: true,
-      entityType: true,
-      metadata: true,
-      createdAt: true,
-      actor: { select: { name: true, username: true } },
-    },
-  });
+  const rows = await db
+    .select({
+      id: auditLogs.id,
+      action: auditLogs.action,
+      entityType: auditLogs.entityType,
+      metadata: auditLogs.metadata,
+      createdAt: auditLogs.createdAt,
+      actorName: users.name,
+      actorUsername: users.username,
+    })
+    .from(auditLogs)
+    .leftJoin(users, eq(users.id, auditLogs.actorUserId))
+    .where(
+      and(
+        eq(auditLogs.organizationId, ctx.scope.organizationId),
+        inArray(auditLogs.action, DASHBOARD_ACTIVITY_ACTIONS),
+      ),
+    )
+    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+    .limit(take);
 
   return rows.map((row) => {
     const base = ACTIVITY_LABELS[row.action] ?? row.action;
@@ -219,14 +257,13 @@ export async function getRecentActivity(
       row.action === "PAYMENT_RECORDED" &&
       typeof row.metadata === "object" &&
       row.metadata !== null &&
-      (row.metadata as Prisma.JsonObject).reversed === true;
+      (row.metadata as Record<string, unknown>).reversed === true;
     return {
       id: row.id,
       action: row.action,
       label: isReversal ? "Pembayaran dibatalkan (reversal)" : base,
       entityType: row.entityType,
-      actorName:
-        row.actor?.name || row.actor?.username || "Sistem",
+      actorName: row.actorName || row.actorUsername || "Sistem",
       createdAt: row.createdAt.toISOString(),
     };
   });

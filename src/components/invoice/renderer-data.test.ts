@@ -50,7 +50,7 @@ function previewInput(overrides: Partial<RendererPreviewInput> = {}): RendererPr
     values: formValues(),
     numberPreview: "INV/SB/VII/2026/001",
     profile: {
-      name: "Karya Nusantara",
+      name: "CreaInvoice Studio",
       legalName: null,
       logoPath: null,
       primaryColor: "#2563eb",
@@ -134,7 +134,7 @@ describe("buildRendererPreviewData — draft bank block stays masked", () => {
       previewInput({
         bank: {
           bankName: "Bank Uji",
-          accountHolder: "PT Karya Nusantara",
+          accountHolder: "PT CreaInvoice Studio",
           maskedNumber: "**** **** 3449",
           branch: null,
         },

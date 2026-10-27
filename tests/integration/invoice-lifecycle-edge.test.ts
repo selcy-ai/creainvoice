@@ -9,8 +9,8 @@
 
 import { beforeAll, describe, expect, it } from "vitest";
 import { AppError, isAppError } from "@/lib/errors";
-import { can } from "@/modules/permissions/service";
-import { db } from "@/server/db";
+import { can } from "@/modules/workspace/permissions";
+import { db } from "@/tests/helpers/test-db";
 import { createCustomer } from "@/modules/customers/service";
 import { createProject, getProjectBilling, type ProjectFormInput } from "@/modules/projects/service";
 import { createProfile } from "@/modules/profiles/service";
@@ -22,7 +22,6 @@ import { issueInvoice } from "@/modules/invoices/issue-service";
 import { cancelInvoice, createRevision, markSent } from "@/modules/invoices/lifecycle-service";
 import { getInvoiceDetail } from "@/modules/invoices/detail-service";
 import { getPdfJob } from "@/modules/pdf/service";
-import type { OrganizationRole } from "@prisma/client";
 import {
   addMembership,
   createOrganization,
@@ -30,6 +29,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let owner: TestUser;
 let admin: TestUser;
@@ -47,18 +47,11 @@ let foreignSignerId: string;
 /** Kept invoice-free so a zero billed sum is provable, not coincidental. */
 let isolationProjectId: string;
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 
-const ownerCtx = (organizationId?: string) => ctxFor(organizationId ?? org.id, "OWNER", owner.id);
-const adminCtx = () => ctxFor(org.id, "ADMIN", admin.id);
-const staffCtx = () => ctxFor(org.id, "STAFF", staff.id);
-const foreignCtx = () => ctxFor(otherOrg.id, "OWNER", owner.id);
+const ownerCtx = (organizationId?: string) => ctxFor(organizationId ?? org.id, owner.id);
+const adminCtx = () => ctxFor(org.id, admin.id);
+const staffCtx = () => ctxFor(org.id, staff.id);
+const foreignCtx = () => ctxFor(otherOrg.id, owner.id);
 
 async function expectAppFailure(
   promise: Promise<unknown>,
@@ -94,14 +87,14 @@ beforeAll(async () => {
   owner = await createUser({ username: "edge.owner" });
   admin = await createUser({ username: "edge.admin" });
   staff = await createUser({ username: "edge.staff" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Organisasi Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(admin.id, org.id, "ADMIN");
   await addMembership(staff.id, org.id, "STAFF");
   await addMembership(owner.id, otherOrg.id, "OWNER");
 
-  const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
   const foreignProfile = await createProfile(ownerCtx(otherOrg.id), {
     name: "Organisasi Lain",
@@ -110,7 +103,7 @@ beforeAll(async () => {
   foreignProfileId = foreignProfile.id;
 
   const bank = await saveBankAccount(
-    { bankName: "Bank Uji", accountNumber: "1234567890", accountHolder: "PT Karya Nusantara" },
+    { bankName: "Bank Uji", accountNumber: "1234567890", accountHolder: "PT CreaInvoice Studio" },
     ownerCtx(),
   );
   bankId = bank.id;
@@ -120,7 +113,7 @@ beforeAll(async () => {
   );
   foreignBankId = foreignBank.id;
 
-  const signer = await saveSigner({ name: "Karya Nusantara", title: "Direktur" }, ownerCtx());
+  const signer = await saveSigner({ name: "CreaInvoice Studio", title: "Direktur" }, ownerCtx());
   signerId = signer.id;
   const foreignSigner = await saveSigner(
     { name: "Petani Asing", title: "Direktur" },
@@ -377,7 +370,8 @@ describe("ADMIN role", () => {
     const revision = await createRevision(original.id, adminCtx());
     expect(revision.originalId).toBe(original.id);
 
-    // ADMIN_EXCLUDED must not bleed into any invoice action.
+    // Flat workspace (Change 6): every workspace action is granted to any
+    // verified member — the old ADMIN/OWNER exclusivity is gone.
     for (const action of [
       "invoice.view",
       "invoice.download",
@@ -392,7 +386,7 @@ describe("ADMIN role", () => {
       "invoice.draft.update",
       "invoice.draft.delete",
     ] as const) {
-      expect(can(action, { role: "ADMIN" }), action).toBe(true);
+      expect(can(action, { organizationId: org.id, userId: owner.id }), action).toBe(true);
     }
   });
 
@@ -419,21 +413,12 @@ describe("ADMIN role", () => {
     expect(draftDetail.permissions.revise).toBe(false);
   });
 
-  it("ADMIN_EXCLUDED stays owner-only and never touches invoice actions", () => {
-    for (const action of [
-      "invoice.view",
-      "invoice.issue",
-      "invoice.cancel",
-      "project.create",
-      "payment.record",
-      "org.settings.update",
-    ] as const) {
-      expect(can(action, { role: "ADMIN" }), action).toBe(true);
-    }
-    expect(can("delete_org", { role: "ADMIN" })).toBe(false);
-    expect(can("transfer_ownership", { role: "ADMIN" })).toBe(false);
-    expect(can("delete_org", { role: "OWNER" })).toBe(true);
-    expect(can("transfer_ownership", { role: "OWNER" })).toBe(true);
+  it("no scope grants nothing (fail closed, flat workspace)", () => {
+    // Change 6: there is no role string to fall back on — without a verified
+    // organization scope, nothing is permitted.
+    expect(can("invoice.view", {})).toBe(false);
+    expect(can("invoice.cancel", { organizationId: org.id })).toBe(false);
+    expect(can("payment.record", { userId: owner.id })).toBe(false);
   });
 });
 

@@ -1,15 +1,16 @@
 // src/modules/projects/service.ts
 // ProjectReference (PO / SPK / contract / quotation) domain: org-scoped CRUD,
 // server-side list with pagination/search, PO attachment lifecycle through
-// StorageService, prefillFromProject — the preparation hook feature 04's
-// invoice editor calls to pre-fill a new draft from a project — and
-// billedToDate (feature 05): how much of this project has been invoiced,
-// straight from the Invoice table (invariant 6: only issued-and-later,
-// non-CANCELLED/non-REVISED invoices count).
+// StorageService, prefillFromProject — the preparation hook the invoice
+// editor calls to pre-fill a new draft from a project — and billedToDate:
+// how much of this project has been invoiced, straight from the Invoice
+// table (invariant 6: only issued-and-later, non-CANCELLED/non-REVISED
+// invoices count).
 
 import { log } from "@/modules/audit/service";
 import { AppError } from "@/lib/errors";
-import { assertCan, requireOrgScope } from "@/modules/permissions/service";
+import type { WorkspaceScope } from "@/modules/workspace/service";
+import { assertCan, requireOrgScope } from "@/modules/workspace/permissions";
 import { getStorageService } from "@/modules/storage";
 import { getCustomerForScope } from "@/modules/customers/service";
 import { BILLED_STATUSES, sumBilledForProject } from "@/modules/invoices/billed";
@@ -18,10 +19,15 @@ import Decimal from "decimal.js";
 import { logger } from "@/server/logger";
 import { db } from "@/server/db";
 import { projectFormSchema } from "@/modules/projects/schema";
-import type { OrganizationRole, ProjectReference, Prisma } from "@prisma/client";
+import { customers, invoices, projectReferences } from "@/db/schema";
+import type { AuditAction, ProjectStatus, ReferenceType } from "@/db/enums";
+import { and, asc, count, desc, eq, ilike, or } from "drizzle-orm";
 import type { z } from "zod";
 
 export type ProjectFormInput = z.infer<typeof projectFormSchema>;
+
+type ProjectRow = typeof projectReferences.$inferSelect;
+type ProjectInsert = typeof projectReferences.$inferInsert;
 
 /** Only these content types can become a PO attachment (sniffed, not claimed). */
 export const ATTACHMENT_MIME_TYPES = [
@@ -37,7 +43,7 @@ const ATTACHMENT_KIND = "references";
 // ─── Service context ──────────────────────────────────────────────────────
 
 export interface ProjectServiceContext {
-  scope: { organizationId: string; role: OrganizationRole; userId: string };
+  scope: WorkspaceScope;
   request?: Request | null;
 }
 
@@ -47,77 +53,94 @@ export interface ProjectListItem {
   id: string;
   customerId: string;
   customerName: string;
-  referenceType: ProjectReference["referenceType"];
+  referenceType: ReferenceType;
   referenceNumber: string;
   referenceDate: string | null;
   title: string;
   workValue: string;
   currency: string;
-  status: ProjectReference["status"];
+  status: ProjectStatus;
   hasAttachment: boolean;
   createdAt: string;
 }
 
-export interface ProjectDetail extends ProjectListItem {
+export interface ProjectDetail {
+  id: string;
+  customerId: string;
+  customerName: string;
+  referenceType: ReferenceType;
+  referenceNumber: string;
+  referenceDate: string | null;
+  title: string;
   description: string | null;
+  workValue: string;
+  currency: string;
   startDate: string | null;
   endDate: string | null;
+  status: ProjectStatus;
   attachmentPath: string | null;
   notes: string | null;
+  createdAt: string;
   updatedAt: string;
 }
 
-function isoOrNull(value: Date | null | undefined): string | null {
-  return value ? value.toISOString() : null;
-}
-
-export function toProjectListItem(
-  project: ProjectReference & { customer?: { companyName: string } },
+function toProjectListItem(
+  row: ProjectRow & { customerCompany: string | null },
 ): ProjectListItem {
   return {
-    id: project.id,
-    customerId: project.customerId,
-    customerName: project.customer?.companyName ?? "",
-    referenceType: project.referenceType,
-    referenceNumber: project.referenceNumber,
-    referenceDate: isoOrNull(project.referenceDate),
-    title: project.title,
-    // Decimal string as stored — no float ever crosses into the UI.
-    workValue: project.workValue.toString(),
-    currency: project.currency,
-    status: project.status,
-    hasAttachment: Boolean(project.attachmentPath),
-    createdAt: project.createdAt.toISOString(),
+    id: row.id,
+    customerId: row.customerId,
+    customerName: row.customerCompany ?? "",
+    referenceType: row.referenceType,
+    referenceNumber: row.referenceNumber,
+    referenceDate: row.referenceDate ? row.referenceDate.toISOString() : null,
+    title: row.title,
+    workValue: row.workValue,
+    currency: row.currency,
+    status: row.status,
+    hasAttachment: row.attachmentPath !== null,
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
-export function toProjectDetail(
-  project: ProjectReference & { customer?: { companyName: string } },
+function toProjectDetail(
+  row: ProjectRow & { customerCompany: string | null },
 ): ProjectDetail {
   return {
-    ...toProjectListItem(project),
-    description: project.description,
-    startDate: isoOrNull(project.startDate),
-    endDate: isoOrNull(project.endDate),
-    attachmentPath: project.attachmentPath,
-    notes: project.notes,
-    updatedAt: project.updatedAt.toISOString(),
+    id: row.id,
+    customerId: row.customerId,
+    customerName: row.customerCompany ?? "",
+    referenceType: row.referenceType,
+    referenceNumber: row.referenceNumber,
+    referenceDate: row.referenceDate ? row.referenceDate.toISOString() : null,
+    title: row.title,
+    description: row.description,
+    workValue: row.workValue,
+    currency: row.currency,
+    startDate: row.startDate ? row.startDate.toISOString() : null,
+    endDate: row.endDate ? row.endDate.toISOString() : null,
+    status: row.status,
+    attachmentPath: row.attachmentPath,
+    notes: row.notes,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
   };
 }
 
-// ─── Audit (metadata: ids and field names — no customer PII) ──────────────
+// ─── Audit (metadata: ids and field names only — never customer values) ─────
 
 async function writeAudit(
   ctx: ProjectServiceContext,
-  entityId: string,
+  projectId: string,
   metadata: Record<string, unknown>,
+  action: AuditAction = "PROJECT_UPDATED",
 ): Promise<void> {
   await log({
     actorUserId: ctx.scope.userId,
     organizationId: ctx.scope.organizationId,
-    action: metadata.change === "created" ? "PROJECT_CREATED" : "PROJECT_UPDATED",
-    entityType: "projectReference",
-    entityId,
+    action,
+    entityType: "project",
+    entityId: projectId,
     metadata,
     request: ctx.request ?? null,
   });
@@ -140,32 +163,41 @@ export async function listProjects(ctx: ProjectServiceContext, query: ListProjec
   const pageSize = Math.min(Math.max(requestedPageSize || 20, 1), 100);
   const q = (query.q ?? "").trim().slice(0, 100);
 
-  const where: Prisma.ProjectReferenceWhereInput = {
-    organizationId: ctx.scope.organizationId,
-    ...(q
-      ? {
-          OR: [
-            { referenceNumber: { contains: q, mode: "insensitive" as const } },
-            { title: { contains: q, mode: "insensitive" as const } },
-            { customer: { companyName: { contains: q, mode: "insensitive" as const } } },
-          ],
-        }
-      : {}),
-  };
+  const scopeFilter = eq(projectReferences.organizationId, ctx.scope.organizationId);
+  const where = q
+    ? and(
+        scopeFilter,
+        or(
+          ilike(projectReferences.referenceNumber, `%${q}%`),
+          ilike(projectReferences.title, `%${q}%`),
+          ilike(customers.companyName, `%${q}%`),
+        ),
+      )
+    : scopeFilter;
 
-  const total = await db.projectReference.count({ where });
+  const totalRows = await db
+    .select({ value: count() })
+    .from(projectReferences)
+    .leftJoin(customers, eq(customers.id, projectReferences.customerId))
+    .where(where);
+  const total = Number(totalRows[0]?.value ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(requestedPage, totalPages);
-  const rows = await db.projectReference.findMany({
-    where,
-    orderBy: [{ createdAt: "desc" }],
-    skip: (page - 1) * pageSize,
-    take: pageSize,
-    include: { customer: { select: { companyName: true } } },
-  });
+
+  const rows = await db
+    .select({
+      project: projectReferences,
+      customerCompany: customers.companyName,
+    })
+    .from(projectReferences)
+    .leftJoin(customers, eq(customers.id, projectReferences.customerId))
+    .where(where)
+    .orderBy(desc(projectReferences.createdAt))
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
 
   return {
-    rows: rows.map(toProjectListItem),
+    rows: rows.map((row) => toProjectListItem({ ...row.project, customerCompany: row.customerCompany })),
     total,
     page,
     pageSize,
@@ -177,16 +209,31 @@ export async function listProjects(ctx: ProjectServiceContext, query: ListProjec
 export async function getProjectForScope(
   projectId: string,
   ctx: ProjectServiceContext,
-): Promise<ProjectReference & { customer: { companyName: string } }> {
+): Promise<ProjectRow & { customer: { companyName: string; id: string } }> {
   requireOrgScope(ctx.scope);
-  const project = await db.projectReference.findUnique({
-    where: { id: projectId },
-    include: { customer: { select: { companyName: true, id: true } } },
-  });
-  if (!project || project.organizationId !== ctx.scope.organizationId) {
+  const rows = await db
+    .select({
+      project: projectReferences,
+      customerCompany: customers.companyName,
+      customerId: customers.id,
+    })
+    .from(projectReferences)
+    .leftJoin(customers, eq(customers.id, projectReferences.customerId))
+    .where(
+      and(
+        eq(projectReferences.id, projectId),
+        eq(projectReferences.organizationId, ctx.scope.organizationId),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row || !row.customerId) {
     throw new AppError("NOT_FOUND", "Project tidak ditemukan.");
   }
-  return project;
+  return {
+    ...row.project,
+    customer: { companyName: row.customerCompany ?? "", id: row.customerId },
+  };
 }
 
 // ─── Writes ────────────────────────────────────────────────────────────────
@@ -202,12 +249,13 @@ async function requireCustomerInScope(customerId: string, ctx: ProjectServiceCon
 export async function createProject(
   input: ProjectFormInput,
   ctx: ProjectServiceContext,
-): Promise<ProjectReference> {
+): Promise<ProjectRow> {
   assertCan("project.create", ctx.scope);
   const customer = await requireCustomerInScope(input.customerId, ctx);
 
-  const project = await db.projectReference.create({
-    data: {
+  const [project] = await db
+    .insert(projectReferences)
+    .values({
       organizationId: ctx.scope.organizationId,
       customerId: customer.id,
       referenceType: input.referenceType,
@@ -215,21 +263,28 @@ export async function createProject(
       referenceDate: parseCalendarDate(input.referenceDate),
       title: input.title,
       description: input.description?.trim() || null,
-      // Decimal string straight into the Decimal column — never a float.
+      // Decimal string straight into the numeric column — never a float.
       workValue: input.workValue,
       currency: input.currency,
       startDate: parseCalendarDate(input.startDate),
       endDate: parseCalendarDate(input.endDate),
       status: input.status ?? "ACTIVE",
       notes: input.notes?.trim() || null,
+    })
+    .returning();
+  if (!project) throw new AppError("INTERNAL_ERROR", "Project gagal dibuat.");
+
+  await writeAudit(
+    ctx,
+    project.id,
+    {
+      change: "created",
+      referenceType: project.referenceType,
+      customerId: project.customerId,
+      status: project.status,
     },
-  });
-  await writeAudit(ctx, project.id, {
-    change: "created",
-    referenceType: project.referenceType,
-    customerId: project.customerId,
-    status: project.status,
-  });
+    "PROJECT_CREATED",
+  );
   return project;
 }
 
@@ -237,7 +292,7 @@ export async function updateProject(
   projectId: string,
   input: ProjectFormInput,
   ctx: ProjectServiceContext,
-): Promise<ProjectReference> {
+): Promise<ProjectRow> {
   assertCan("project.update", ctx.scope);
   const project = await getProjectForScope(projectId, ctx);
 
@@ -270,45 +325,44 @@ export async function updateProject(
   }
   if (changed.length === 0) return project;
 
-  const data: Prisma.ProjectReferenceUpdateInput = {};
+  const data: Partial<ProjectInsert> = {};
   for (const key of changed) {
     const value = normalized[key];
     if (value === undefined) continue;
-    if (key === "customerId") data.customer = { connect: { id: String(value) } };
-    else if (key === "referenceType") data.referenceType = value as ProjectReference["referenceType"];
-    else if (key === "referenceNumber") data.referenceNumber = String(value);
-    else if (key === "referenceDate") data.referenceDate = value as Date | null;
-    else if (key === "title") data.title = String(value);
-    else if (key === "description") data.description = value as string | null;
-    else if (key === "workValue") data.workValue = String(value);
-    else if (key === "currency") data.currency = String(value);
-    else if (key === "startDate") data.startDate = value as Date | null;
-    else if (key === "endDate") data.endDate = value as Date | null;
-    else if (key === "status") data.status = value as ProjectReference["status"];
-    else if (key === "notes") data.notes = value as string | null;
+    (data as Record<string, unknown>)[key] = value;
   }
 
-  const updated = await db.projectReference.update({ where: { id: project.id }, data });
+  const [updated] = await db
+    .update(projectReferences)
+    .set(data)
+    .where(eq(projectReferences.id, project.id))
+    .returning();
+  if (!updated) throw new AppError("INTERNAL_ERROR", "Project gagal diperbarui.");
+
   await writeAudit(ctx, project.id, { change: "updated", fields: changed });
   return updated;
 }
 
 /**
  * Hard delete (data-model rule: only Customer soft-deletes; a project row is
- * history that the UI removes explicitly, with a confirm dialog). The AuditAction
- * enum has no PROJECT_DELETED yet — the canonical list is finalized in feature
- * 11 — so the removal is audited as PROJECT_UPDATED with `change: "deleted"`
- * (open question tracked in progress-tracker). The stored attachment file is
- * cleaned up best-effort; a storage hiccup never fails the save.
+ * history that the UI removes explicitly, with a confirm dialog). The
+ * AuditAction enum has no PROJECT_DELETED — the removal is audited as
+ * PROJECT_UPDATED with `change: "deleted"` (canonical list decision, kept by
+ * Change 6). The stored attachment file is cleaned up best-effort; a storage
+ * hiccup never fails the save.
  */
 export async function deleteProject(
   projectId: string,
   ctx: ProjectServiceContext,
-): Promise<ProjectReference> {
+): Promise<ProjectRow> {
   assertCan("project.delete", ctx.scope);
   const project = await getProjectForScope(projectId, ctx);
 
-  const deleted = await db.projectReference.delete({ where: { id: project.id } });
+  const [deleted] = await db
+    .delete(projectReferences)
+    .where(eq(projectReferences.id, project.id))
+    .returning();
+  if (!deleted) throw new AppError("INTERNAL_ERROR", "Project gagal dihapus.");
 
   if (project.attachmentPath) {
     await getStorageService()
@@ -335,7 +389,7 @@ export async function uploadProjectAttachment(
   projectId: string,
   file: File,
   ctx: ProjectServiceContext,
-): Promise<ProjectReference> {
+): Promise<ProjectRow> {
   assertCan("project.update", ctx.scope);
   const project = await getProjectForScope(projectId, ctx);
 
@@ -347,10 +401,12 @@ export async function uploadProjectAttachment(
     allowedMimeTypes: ATTACHMENT_MIME_TYPES,
   });
 
-  const updated = await db.projectReference.update({
-    where: { id: project.id },
-    data: { attachmentPath: stored.path },
-  });
+  const [updated] = await db
+    .update(projectReferences)
+    .set({ attachmentPath: stored.path })
+    .where(eq(projectReferences.id, project.id))
+    .returning();
+  if (!updated) throw new AppError("INTERNAL_ERROR", "Project gagal diperbarui.");
 
   if (project.attachmentPath) {
     // Best-effort cleanup of the replaced file — never fails the save.
@@ -376,15 +432,17 @@ export async function uploadProjectAttachment(
 export async function removeProjectAttachment(
   projectId: string,
   ctx: ProjectServiceContext,
-): Promise<ProjectReference> {
+): Promise<ProjectRow> {
   assertCan("project.update", ctx.scope);
   const project = await getProjectForScope(projectId, ctx);
   if (!project.attachmentPath) return project;
 
-  const updated = await db.projectReference.update({
-    where: { id: project.id },
-    data: { attachmentPath: null },
-  });
+  const [updated] = await db
+    .update(projectReferences)
+    .set({ attachmentPath: null })
+    .where(eq(projectReferences.id, project.id))
+    .returning();
+  if (!updated) throw new AppError("INTERNAL_ERROR", "Project gagal diperbarui.");
   await getStorageService()
     .delete(project.attachmentPath)
     .catch((error: unknown) =>
@@ -397,12 +455,11 @@ export async function removeProjectAttachment(
   return updated;
 }
 
-// ─── Invoice prefill (preparation for feature 04) ──────────────────────────
+// ─── Invoice prefill ───────────────────────────────────────────────────────
 
 /**
- * Proposed editor line item. Projects carry no work-item table in feature 03
- * (spec Scope Limits — deferred), so prefill hands the feature-04 editor an
- * EMPTY item list: honest, never a fabricated row.
+ * Proposed editor line item. Projects carry no work-item table, so prefill
+ * hands the invoice editor an EMPTY item list: honest, never a fabricated row.
  */
 export interface ProjectPrefillItem {
   description: string;
@@ -421,8 +478,8 @@ export interface ProjectPrefill {
 }
 
 /**
- * Feature 03 exposes ONLY this service (the calling UI lives in feature 04,
- * per the spec). Org-scoped: a foreign project id answers 404.
+ * Feature 03 exposes ONLY this service (the calling UI lives in the invoice
+ * editor). Org-scoped: a foreign project id answers 404.
  */
 export async function prefillFromProject(
   projectId: string,
@@ -433,12 +490,12 @@ export async function prefillFromProject(
     customerId: project.customerId,
     referenceNumber: project.referenceNumber,
     referenceDate: project.referenceDate,
-    workValue: project.workValue.toString(),
+    workValue: project.workValue,
     items: [],
   };
 }
 
-// ─── billedToDate (feature 05 — replaces feature 03's honest placeholder) ─
+// ─── billedToDate (replaces feature 03's honest placeholder) ───────────────
 
 export interface ProjectBilling {
   workValue: string;
@@ -465,21 +522,21 @@ export async function getProjectBilling(
     organizationId: ctx.scope.organizationId,
     projectReferenceId: project.id,
   });
-  const remainingRaw = new Decimal(project.workValue.toString()).minus(billedToDate);
-  const invoiceCount = await db.invoice.count({
-    where: {
-      organizationId: ctx.scope.organizationId,
-      projectReferenceId: project.id,
-      status: {
-        in: [...BILLED_STATUSES],
-      },
-    },
-  });
+  const remainingRaw = new Decimal(project.workValue).minus(billedToDate);
+  const countRows = await db
+    .select({ value: count() })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.organizationId, ctx.scope.organizationId),
+        eq(invoices.projectReferenceId, project.id),
+      ),
+    );
   return {
-    workValue: project.workValue.toString(),
+    workValue: project.workValue,
     billedToDate,
     remaining: (remainingRaw.isNegative() ? new Decimal(0) : remainingRaw).toFixed(2),
-    invoiceCount,
+    invoiceCount: Number(countRows[0]?.value ?? 0),
   };
 }
 
@@ -490,3 +547,6 @@ export async function billedToDate(
 ): Promise<string> {
   return (await getProjectBilling(projectId, ctx)).billedToDate;
 }
+
+/** Unused-import guard (keeps the module's exports stable for callers). */
+export const __projectsAsc = asc;

@@ -11,7 +11,7 @@ import {
   recomputePaymentStatus,
   remainingAfterPayment,
 } from "@/modules/payments/status";
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
 
 function expectLocked(run: () => unknown): AppError {
   let caught: unknown = null;

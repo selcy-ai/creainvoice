@@ -31,7 +31,23 @@
 import { readdir, rm, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { PrismaClient } from "@prisma/client";
+import { Pool } from "pg";
+
+/** Change 6: Prisma is gone. Maintenance runs on plain `pg` — the script
+ *  cannot import the TypeScript Drizzle client, and these two jobs are raw
+ *  SQL by nature (batched UPDATE, one column scan per reference table). */
+
+/** The (table, storage-path column) pairs behind the orphan rule, in the
+ *  database's own snake_case (schema.ts maps camelCase onto these). */
+const REFERENCE_TABLES = [
+  ["upload_record", "path"],
+  ["invoice_pdf", "storage_path"],
+  ["invoice", "pdf_path"],
+  ["project_reference", "attachment_path"],
+  ["invoice_profile", "logo_path"],
+  ["signer", "signature_image_path"],
+  ["payment", "proof_path"],
+];
 
 /** Statuses that can still become overdue — mirrors OVERDUE_ELIGIBLE_STATUSES
  * in modules/invoices/lifecycle-service.ts (PAID is settled, DRAFT is not a
@@ -40,18 +56,6 @@ export const OVERDUE_ELIGIBLE_STATUSES = ["ISSUED", "SENT", "PARTIALLY_PAID"];
 
 /** Spec 11A: overdue recompute runs in batches of 100 and logs each batch. */
 export const OVERDUE_BATCH_SIZE = 100;
-
-/** Every column that owns a storage path — a file referenced by any of these
- * has a record and must never be treated as an orphan. */
-const REFERENCE_COLUMNS = [
-  ["uploadRecord", "path"],
-  ["invoicePdf", "storagePath"],
-  ["invoice", "pdfPath"],
-  ["projectReference", "attachmentPath"],
-  ["invoiceProfile", "logoPath"],
-  ["signer", "signatureImagePath"],
-  ["payment", "proofPath"],
-];
 
 /** One structured JSON line per maintenance event (stdout for progress,
  * stderr for failures — no secrets, no account numbers, no NPWP). */
@@ -95,13 +99,13 @@ export function nextStoredStatus(row, now = new Date()) {
   return isOverdueCandidate(row, now) ? "OVERDUE" : row.status;
 }
 
-async function collectReferencedPaths(prisma) {
+/** Every storage path the database still references (any table, any column). */
+async function collectReferencedPaths(client) {
   const referenced = new Set();
-  for (const [model, column] of REFERENCE_COLUMNS) {
-    const rows = await prisma[model].findMany({ select: { [column]: true } });
-    for (const row of rows) {
-      const path = row[column];
-      if (path) referenced.add(path);
+  for (const [table, column] of REFERENCE_TABLES) {
+    const result = await client.query(`SELECT ${column} AS path FROM ${table}`);
+    for (const row of result.rows) {
+      if (row.path) referenced.add(row.path);
     }
   }
   return referenced;
@@ -143,11 +147,11 @@ async function walkFiles(dir, root, out = []) {
  */
 export const ORPHAN_GRACE_MS = 60 * 60 * 1000; // 1 hour
 
-export async function cleanupOrphanFiles(prisma, options = {}) {
+export async function cleanupOrphanFiles(client, options = {}) {
   const storageRoot = resolve(options.storageRoot ?? process.env.STORAGE_ROOT ?? "./.data");
   const graceMs = options.graceMs ?? ORPHAN_GRACE_MS;
   const log = options.log ?? logEvent;
-  const referenced = await collectReferencedPaths(prisma);
+  const referenced = await collectReferencedPaths(client);
   const files = await walkFiles(storageRoot, storageRoot);
 
   let kept = 0;
@@ -201,7 +205,7 @@ export async function cleanupOrphanFiles(prisma, options = {}) {
  * simply not counted), and a batch that makes no progress stops the loop, so
  * the sweep can never spin. Running it again updates 0 rows — idempotent.
  */
-export async function recomputeOverdue(prisma, options = {}) {
+export async function recomputeOverdue(client, options = {}) {
   const batchSize = options.batchSize ?? OVERDUE_BATCH_SIZE;
   const now = options.now ?? new Date();
   const log = options.log ?? logEvent;
@@ -210,26 +214,23 @@ export async function recomputeOverdue(prisma, options = {}) {
   let updated = 0;
   let batches = 0;
   for (;;) {
-    const rows = await prisma.invoice.findMany({
-      where: {
-        status: { in: OVERDUE_ELIGIBLE_STATUSES },
-        dueDate: { not: null, lt: startOfToday },
-      },
-      select: { id: true },
-      take: batchSize,
-    });
-    if (rows.length === 0) break;
+    const ids = await client.query(
+      `SELECT id FROM invoice
+       WHERE status = ANY($1) AND due_date IS NOT NULL AND due_date < $2
+       ORDER BY id LIMIT $3`,
+      [OVERDUE_ELIGIBLE_STATUSES, startOfToday, batchSize],
+    );
+    if (ids.rows.length === 0) break;
 
-    const result = await prisma.invoice.updateMany({
-      where: {
-        id: { in: rows.map((row) => row.id) },
-        status: { in: OVERDUE_ELIGIBLE_STATUSES },
-        dueDate: { not: null, lt: startOfToday },
-      },
-      data: { status: "OVERDUE" },
-    });
+    const result = await client.query(
+      `UPDATE invoice
+       SET status = 'OVERDUE'
+       WHERE id = ANY($1) AND status = ANY($2)
+         AND due_date IS NOT NULL AND due_date < $3`,
+      [ids.rows.map((row) => row.id), OVERDUE_ELIGIBLE_STATUSES, startOfToday],
+    );
     batches += 1;
-    updated += result.count;
+    updated += result.rowCount;
     log({
       job: "overdue-recompute",
       event: "batch",
@@ -257,12 +258,12 @@ async function main() {
   }
 
   const storageRoot = resolve(process.env.STORAGE_ROOT || "./.data");
-  const prisma = new PrismaClient();
+  const client = new Pool({ connectionString: process.env.DATABASE_URL });
   let exitCode = 0;
   try {
     logEvent({ event: "start", storageRoot, jobs: ["orphan-cleanup", "overdue-recompute"] });
-    const orphan = await cleanupOrphanFiles(prisma, { storageRoot });
-    const overdue = await recomputeOverdue(prisma, {});
+    const orphan = await cleanupOrphanFiles(client, { storageRoot });
+    const overdue = await recomputeOverdue(client, {});
     logEvent({
       event: "done",
       orphanCleanup: {
@@ -282,7 +283,7 @@ async function main() {
     });
     exitCode = 1;
   } finally {
-    await prisma.$disconnect();
+    await client.end();
   }
   return exitCode;
 }

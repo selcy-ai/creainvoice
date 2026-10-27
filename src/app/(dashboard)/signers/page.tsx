@@ -20,13 +20,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { SetDefaultSignerButton } from "@/components/signers/set-default-signer-button";
-import { can } from "@/modules/permissions/service";
 import { listSignersPage } from "@/modules/signers/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Penanda Tangan — invoice-me",
+  title: "Penanda Tangan — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -50,7 +49,7 @@ export default async function SignersPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   const params = await searchParams;
   const page = Math.max(1, Number(first(params.page)) || 1);
 
@@ -71,8 +70,8 @@ export default async function SignersPage({
   }
 
   const result = await listSignersPage({ scope }, { page });
-  const mayCreate = can("signer.create", scope);
-  const mayManage = can("signer.update", scope);
+  const mayCreate = Boolean(scope);
+  const mayManage = Boolean(scope);
 
   return (
     <div className="flex flex-col gap-6">

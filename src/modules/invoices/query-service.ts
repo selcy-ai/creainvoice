@@ -20,7 +20,7 @@
 import { AppError } from "@/lib/errors";
 import { parseCalendarDate, toCalendarInput, todayInJakarta } from "@/lib/date";
 import { roundMoney } from "@/lib/money";
-import { assertCan, can, requireOrgScope } from "@/modules/permissions/service";
+import { assertCan, can, requireOrgScope } from "@/modules/workspace/permissions";
 import {
   CANCELABLE_STATUSES,
   OVERDUE_ELIGIBLE_STATUSES,
@@ -28,12 +28,10 @@ import {
 } from "@/modules/invoices/lifecycle-service";
 import { isPayable, remainingAfterPayment } from "@/modules/payments/status";
 import { db } from "@/server/db";
+import { customers, invoiceProfiles, invoices, users } from "@/db/schema";
+import { and, asc, count, desc, eq, gte, ilike, inArray, isNotNull, isNull, lt, lte, or, type SQL } from "drizzle-orm";
 import type { InvoiceServiceContext } from "@/modules/invoices/service";
-import type {
-  InvoiceStatus,
-  InvoiceType,
-  Prisma,
-} from "@prisma/client";
+import type { InvoiceStatus, InvoiceType } from "@/db/enums";
 
 /** Rows per page (client-safe module — never import page sizes from a
  * "use client" file into a server page, feature 07 lesson). */
@@ -254,65 +252,55 @@ function sortSpec(
  *                                already reports as OVERDUE
  *   everything else → the stored status
  */
-function statusWhere(status: InvoiceStatusFilter, now: Date): Prisma.InvoiceWhereInput {
+function statusWhere(status: InvoiceStatusFilter, now: Date): SQL | undefined {
   const startOfToday = new Date(`${todayInJakarta(now)}T00:00:00.000Z`);
   if (status === "OVERDUE") {
     // Feature 11A: the maintenance sweep now PERSISTS OVERDUE, so a stored
     // OVERDUE row must match the filter too (it cannot fall through the `in`
     // clause — otherwise the "chase late payments" list comes back empty).
-    return {
-      OR: [
-        { status: { in: [...OVERDUE_ELIGIBLE_STATUSES] }, dueDate: { not: null, lt: startOfToday } },
-        { status: "OVERDUE" },
-      ],
-    };
+    return or(
+      and(
+        inArray(invoices.status, [...OVERDUE_ELIGIBLE_STATUSES]),
+        isNotNull(invoices.dueDate),
+        lt(invoices.dueDate, startOfToday),
+      ),
+      eq(invoices.status, "OVERDUE"),
+    );
   }
   if (OVERDUE_ELIGIBLE_STATUSES.includes(status)) {
-    return {
-      status,
-      OR: [{ dueDate: null }, { dueDate: { gte: startOfToday } }],
-    };
+    return and(
+      eq(invoices.status, status),
+      or(isNull(invoices.dueDate), gte(invoices.dueDate, startOfToday)),
+    );
   }
-  return { status };
+  return eq(invoices.status, status);
 }
+
+type OrderByExpr = SQL;
 
 function orderBy(
   spec: { field: InvoiceSortField; direction: SortDirection },
-): Prisma.InvoiceOrderByWithRelationInput[] {
-  const dir = spec.direction;
-  const primary: Prisma.InvoiceOrderByWithRelationInput =
+): OrderByExpr[] {
+  const dir = (column: Parameters<typeof asc>[0]) =>
+    spec.direction === "asc" ? asc(column) : desc(column);
+  const primary: OrderByExpr =
     spec.field === "number"
-      ? { number: dir }
+      ? dir(invoices.number)
       : spec.field === "grandTotal"
-        ? { grandTotal: dir }
+        ? dir(invoices.grandTotal)
         : spec.field === "dueDate"
-          ? { dueDate: dir }
+          ? dir(invoices.dueDate)
           : spec.field === "customer"
-            ? { customer: { companyName: dir } }
-            : { invoiceDate: dir };
+            ? dir(customers.companyName)
+            : dir(invoices.invoiceDate);
   // Stable pagination: every sort ends in invoiceDate + id tiebreakers.
-  return [primary, { invoiceDate: dir }, { id: dir }];
+  return [
+    primary,
+    dir(invoices.invoiceDate),
+    dir(invoices.id),
+  ];
 }
 
-/** Columns the list reads (one select shared by the query and its row type). */
-const listSelect = {
-  id: true,
-  number: true,
-  numberPreview: true,
-  status: true,
-  dueDate: true,
-  invoiceType: true,
-  invoiceDate: true,
-  grandTotal: true,
-  amountPaid: true,
-  referenceNumber: true,
-  pdfPath: true,
-  profileId: true,
-  projectReferenceId: true,
-  customer: { select: { companyName: true } },
-  profile: { select: { name: true } },
-  createdBy: { select: { name: true, username: true } },
-} as const satisfies Prisma.InvoiceSelect;
 
 // ─── The list ─────────────────────────────────────────────────────────────
 
@@ -341,33 +329,61 @@ export async function listInvoices(
   const range = invoiceDateRange(query.from, query.to);
   const sort = sortSpec(query.sort, query.dir);
 
-  const where: Prisma.InvoiceWhereInput = {
-    organizationId: ctx.scope.organizationId,
-  };
+  const org = eq(invoices.organizationId, ctx.scope.organizationId);
+  const filters: SQL[] = [org];
   if (search) {
-    where.OR = [
-      { number: { contains: search, mode: "insensitive" } },
-      { numberPreview: { contains: search, mode: "insensitive" } },
-      { customer: { companyName: { contains: search, mode: "insensitive" } } },
-    ];
+    filters.push(
+      or(
+        ilike(invoices.number, `%${search}%`),
+        ilike(invoices.numberPreview, `%${search}%`),
+        ilike(customers.companyName, `%${search}%`),
+      )!,
+    );
   }
-  if (customer) where.customerId = customer;
-  if (profile) where.profileId = profile;
-  if (invoiceType) where.invoiceType = invoiceType;
-  if (status) where.AND = [statusWhere(status, now)];
-  if (range) where.invoiceDate = range;
+  if (customer) filters.push(eq(invoices.customerId, customer));
+  if (profile) filters.push(eq(invoices.profileId, profile));
+  if (invoiceType) filters.push(eq(invoices.invoiceType, invoiceType));
+  const statusClause = status ? statusWhere(status, now) : undefined;
+  if (status && statusClause) filters.push(statusClause);
+  if (range) {
+    if (range.gte) filters.push(gte(invoices.invoiceDate, range.gte));
+    if (range.lte) filters.push(lte(invoices.invoiceDate, range.lte));
+  }
+  const where = and(...filters);
 
-  const total = await db.invoice.count({ where });
+  const totalRows = await db.select({ value: count() }).from(invoices).where(where);
+  const total = Number(totalRows[0]?.value ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Math.max(query.page ?? 1, 1), totalPages);
 
-  const rows = await db.invoice.findMany({
-    where,
-    orderBy: orderBy(sort),
-    skip: (page - 1) * pageSize,
-    take: pageSize,
-    select: listSelect,
-  });
+  const rows = await db
+    .select({
+      id: invoices.id,
+      number: invoices.number,
+      numberPreview: invoices.numberPreview,
+      status: invoices.status,
+      dueDate: invoices.dueDate,
+      invoiceType: invoices.invoiceType,
+      invoiceDate: invoices.invoiceDate,
+      grandTotal: invoices.grandTotal,
+      amountPaid: invoices.amountPaid,
+      referenceNumber: invoices.referenceNumber,
+      pdfPath: invoices.pdfPath,
+      profileId: invoices.profileId,
+      projectReferenceId: invoices.projectReferenceId,
+      customerCompany: customers.companyName,
+      profileName: invoiceProfiles.name,
+      createdByName: users.name,
+      createdByUsername: users.username,
+    })
+    .from(invoices)
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .leftJoin(invoiceProfiles, eq(invoiceProfiles.id, invoices.profileId))
+    .leftJoin(users, eq(users.id, invoices.createdById))
+    .where(where)
+    .orderBy(...orderBy(sort))
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
 
   return {
     rows: rows.map((row) => toListRow(row, ctx, now)),
@@ -378,7 +394,25 @@ export async function listInvoices(
   };
 }
 
-type ListRowPayload = Prisma.InvoiceGetPayload<{ select: typeof listSelect }>;
+interface ListRowPayload {
+  id: string;
+  number: string | null;
+  numberPreview: string | null;
+  status: InvoiceStatus;
+  dueDate: Date | null;
+  invoiceType: InvoiceType;
+  invoiceDate: Date;
+  grandTotal: string;
+  amountPaid: string;
+  referenceNumber: string | null;
+  pdfPath: string | null;
+  profileId: string;
+  projectReferenceId: string | null;
+  customerCompany: string | null;
+  profileName: string | null;
+  createdByName: string | null;
+  createdByUsername: string | null;
+}
 
 function toListRow(
   row: ListRowPayload,
@@ -422,20 +456,20 @@ function toListRow(
     invoiceType: row.invoiceType,
     invoiceDate: toCalendarInput(row.invoiceDate.toISOString()),
     dueDate: row.dueDate ? toCalendarInput(row.dueDate.toISOString()) : null,
-    customerName: row.customer?.companyName ?? "—",
+    customerName: row.customerCompany ?? "—",
     referenceNumber: row.referenceNumber,
     grandTotal,
     amountPaid,
     profileId: row.profileId,
-    profileName: row.profile.name,
-    createdByName: row.createdBy.name || row.createdBy.username || "—",
+    profileName: row.profileName ?? "—",
+    createdByName: row.createdByName || row.createdByUsername || "—",
     projectId: row.projectReferenceId,
     pdfReady: row.pdfPath !== null,
     payment: permissions.recordPayment
       ? {
           id: row.id,
           label,
-          customerName: row.customer?.companyName ?? "—",
+          customerName: row.customerCompany ?? "—",
           status: row.status,
           grandTotal,
           amountPaid,
@@ -456,22 +490,27 @@ export async function listInvoiceFilterOptions(
   assertCan("invoice.view", ctx.scope);
   requireOrgScope(ctx.scope);
 
-  const [customers, profiles] = await Promise.all([
-    db.customer.findMany({
-      where: { organizationId: ctx.scope.organizationId, deletedAt: null },
-      orderBy: { companyName: "asc" },
-      take: FILTER_OPTION_LIMIT,
-      select: { id: true, companyName: true },
-    }),
-    db.invoiceProfile.findMany({
-      where: { organizationId: ctx.scope.organizationId },
-      orderBy: { name: "asc" },
-      take: FILTER_OPTION_LIMIT,
-      select: { id: true, name: true },
-    }),
+  const [customerRows, profileRows] = await Promise.all([
+    db
+      .select({ id: customers.id, companyName: customers.companyName })
+      .from(customers)
+      .where(
+        and(
+          eq(customers.organizationId, ctx.scope.organizationId),
+          isNull(customers.deletedAt),
+        ),
+      )
+      .orderBy(asc(customers.companyName))
+      .limit(FILTER_OPTION_LIMIT),
+    db
+      .select({ id: invoiceProfiles.id, name: invoiceProfiles.name })
+      .from(invoiceProfiles)
+      .where(eq(invoiceProfiles.organizationId, ctx.scope.organizationId))
+      .orderBy(asc(invoiceProfiles.name))
+      .limit(FILTER_OPTION_LIMIT),
   ]);
 
-  return { customers, profiles };
+  return { customers: customerRows, profiles: profileRows };
 }
 
 export interface InvoiceQuickMatch {
@@ -499,34 +538,37 @@ export async function quickSearchInvoices(
   if (q.length === 0) return [];
   const limit = Math.min(Math.max(query.limit ?? QUICK_SEARCH_LIMIT, 1), QUICK_SEARCH_LIMIT);
 
-  const rows = await db.invoice.findMany({
-    where: {
-      organizationId: ctx.scope.organizationId,
-      OR: [
-        { number: { contains: q, mode: "insensitive" } },
-        { numberPreview: { contains: q, mode: "insensitive" } },
-        { customer: { companyName: { contains: q, mode: "insensitive" } } },
-      ],
-    },
-    orderBy: [{ invoiceDate: "desc" }, { id: "desc" }],
-    take: limit,
-    select: {
-      id: true,
-      number: true,
-      numberPreview: true,
-      status: true,
-      dueDate: true,
-      invoiceDate: true,
-      grandTotal: true,
-      customer: { select: { companyName: true } },
-    },
-  });
+  const rows = await db
+    .select({
+      id: invoices.id,
+      number: invoices.number,
+      numberPreview: invoices.numberPreview,
+      status: invoices.status,
+      dueDate: invoices.dueDate,
+      invoiceDate: invoices.invoiceDate,
+      grandTotal: invoices.grandTotal,
+      customerCompany: customers.companyName,
+    })
+    .from(invoices)
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .where(
+      and(
+        eq(invoices.organizationId, ctx.scope.organizationId),
+        or(
+          ilike(invoices.number, `%${q}%`),
+          ilike(invoices.numberPreview, `%${q}%`),
+          ilike(customers.companyName, `%${q}%`),
+        )!,
+      ),
+    )
+    .orderBy(desc(invoices.invoiceDate), desc(invoices.id))
+    .limit(limit);
 
   const now = new Date();
   return rows.map((row) => ({
     id: row.id,
     label: row.number ?? row.numberPreview ?? "—",
-    customerName: row.customer?.companyName ?? "—",
+    customerName: row.customerCompany ?? "—",
     status: row.status,
     displayStatus:
       OVERDUE_ELIGIBLE_STATUSES.includes(row.status) &&

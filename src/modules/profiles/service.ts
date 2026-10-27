@@ -6,14 +6,20 @@
 
 import { log } from "@/modules/audit/service";
 import { AppError } from "@/lib/errors";
+import type { WorkspaceScope } from "@/modules/workspace/service";
 import { prepareImageUpload, IMAGE_MIME_TYPES } from "@/lib/image";
-import { assertCan } from "@/modules/permissions/service";
+import { assertCan } from "@/modules/workspace/permissions";
 import { getStorageService } from "@/modules/storage";
 import { previewNumber, validateNumberPattern } from "@/modules/profiles/number-pattern";
 import { logger } from "@/server/logger";
 import { db } from "@/server/db";
-import type { InvoiceProfile, OrganizationRole, Prisma, TaxMode } from "@prisma/client";
+import { invoiceProfiles, organizations } from "@/db/schema";
+import type { TaxMode } from "@/db/enums";
+import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
+
+type InvoiceProfile = typeof invoiceProfiles.$inferSelect;
+type InvoiceProfileInsert = typeof invoiceProfiles.$inferInsert;
 
 export { previewNumber, validateNumberPattern };
 export type { NumberPreviewContext, PatternValidation } from "@/modules/profiles/number-pattern";
@@ -134,7 +140,7 @@ export type ProfileUpdateInput = z.infer<typeof profileUpdateSchema>;
 
 /** Active-org scope of the caller (resolveActiveOrgScope result shape). */
 export interface ProfileServiceContext {
-  scope: { organizationId: string; role: OrganizationRole; userId: string };
+  scope: WorkspaceScope;
   request?: Request | null;
 }
 
@@ -209,7 +215,7 @@ export function toProfileView(profile: InvoiceProfile): ProfileView {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-/** Short invoice code derived from an organization name: "Karya Nusantara" → "KARYAN". */
+/** Short invoice code derived from an organization name: "CreaInvoice Studio" → "KARYAN". */
 export function deriveProfileCode(name: string): string {
   const cleaned = name
     .normalize("NFKD")
@@ -221,8 +227,18 @@ export function deriveProfileCode(name: string): string {
 
 async function loadForUpdate(profileId: string, ctx: ProfileServiceContext): Promise<InvoiceProfile> {
   assertCan("org.settings.update", ctx.scope);
-  const profile = await db.invoiceProfile.findUnique({ where: { id: profileId } });
-  if (!profile || profile.organizationId !== ctx.scope.organizationId) {
+  const rows = await db
+    .select()
+    .from(invoiceProfiles)
+    .where(
+      and(
+        eq(invoiceProfiles.id, profileId),
+        eq(invoiceProfiles.organizationId, ctx.scope.organizationId),
+      ),
+    )
+    .limit(1);
+  const profile = rows[0];
+  if (!profile) {
     // Same answer as a missing row — no cross-tenant existence leak.
     throw new AppError("NOT_FOUND", "Profil invoice tidak ditemukan.");
   }
@@ -248,11 +264,22 @@ async function writeAudit(
 // ─── Reads ────────────────────────────────────────────────────────────────
 
 export async function getProfileByOrg(organizationId: string): Promise<InvoiceProfile | null> {
-  return db.invoiceProfile.findFirst({ where: { organizationId, isActive: true } });
+  const rows = await db
+    .select()
+    .from(invoiceProfiles)
+    .where(and(eq(invoiceProfiles.organizationId, organizationId), eq(invoiceProfiles.isActive, true)))
+    .orderBy(asc(invoiceProfiles.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function getProfileById(profileId: string): Promise<InvoiceProfile | null> {
-  return db.invoiceProfile.findUnique({ where: { id: profileId } });
+  const rows = await db
+    .select()
+    .from(invoiceProfiles)
+    .where(eq(invoiceProfiles.id, profileId))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /**
@@ -263,10 +290,7 @@ export async function getProfileForScope(
   profileId: string,
   ctx: ProfileServiceContext,
 ): Promise<InvoiceProfile> {
-  const profile = await db.invoiceProfile.findUnique({ where: { id: profileId } });
-  if (!profile || profile.organizationId !== ctx.scope.organizationId) {
-    throw new AppError("NOT_FOUND", "Profil invoice tidak ditemukan.");
-  }
+  const profile = await loadForUpdate(profileId, ctx);
   return profile;
 }
 
@@ -284,10 +308,12 @@ export async function createProfile(
   input: { name?: string; code?: string } & Partial<ProfileUpdateInput>,
 ): Promise<InvoiceProfile> {
   assertCan("org.settings.update", ctx.scope);
-  const organization = await db.organization.findUnique({
-    where: { id: ctx.scope.organizationId },
-    select: { name: true },
-  });
+  const orgRows = await db
+    .select({ name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.id, ctx.scope.organizationId))
+    .limit(1);
+  const organization = orgRows[0];
   if (!organization) {
     throw new AppError("NOT_FOUND", "Organisasi tidak ditemukan.");
   }
@@ -297,8 +323,9 @@ export async function createProfile(
     throw new AppError("CONFLICT", "Profil invoice untuk organisasi ini sudah ada.");
   }
 
-  const profile = await db.invoiceProfile.create({
-    data: {
+  const created = await db
+    .insert(invoiceProfiles)
+    .values({
       organizationId: ctx.scope.organizationId,
       name: (input.name ?? organization.name).trim(),
       code: (input.code ?? deriveProfileCode(organization.name)).toUpperCase(),
@@ -310,15 +337,21 @@ export async function createProfile(
       fax: input.fax ?? null,
       email: input.email ?? null,
       website: input.website ?? null,
-      primaryColor: input.primaryColor ?? undefined,
-      numberPattern: input.numberPattern ?? undefined,
-      sequenceResetPolicy: input.sequenceResetPolicy ?? undefined,
-      defaultTaxMode: input.defaultTaxMode ?? undefined,
-      defaultTaxPercent: input.defaultTaxPercent ?? undefined,
-      defaultStampMode: input.defaultStampMode ?? undefined,
-      defaultNotes: input.defaultNotes ?? undefined,
-    },
-  });
+      ...(input.primaryColor !== undefined ? { primaryColor: input.primaryColor } : {}),
+      ...(input.numberPattern !== undefined ? { numberPattern: input.numberPattern } : {}),
+      ...(input.sequenceResetPolicy !== undefined
+        ? { sequenceResetPolicy: input.sequenceResetPolicy }
+        : {}),
+      ...(input.defaultTaxMode !== undefined ? { defaultTaxMode: input.defaultTaxMode } : {}),
+      ...(input.defaultTaxPercent !== undefined
+        ? { defaultTaxPercent: String(input.defaultTaxPercent) }
+        : {}),
+      ...(input.defaultStampMode !== undefined ? { defaultStampMode: input.defaultStampMode } : {}),
+      ...(input.defaultNotes !== undefined ? { defaultNotes: input.defaultNotes } : {}),
+    })
+    .returning();
+  const profile = created[0];
+  if (!profile) throw new AppError("INTERNAL_ERROR", "Profil invoice gagal dibuat.");
   await writeAudit(ctx, profile.id, { change: "created", name: profile.name, code: profile.code });
   return profile;
 }
@@ -346,7 +379,7 @@ export async function updateProfile(
   for (const key of Object.keys(input) as Array<keyof ProfileUpdateInput>) {
     const next = input[key];
     if (next === undefined) continue;
-    const current = profile[key];
+    const current = (profile as unknown as Record<string, unknown>)[key];
     const currentComparable = current instanceof Date ? current.toISOString() : current;
     if (String(currentComparable ?? "") !== String(next ?? "")) {
       changed.push(key);
@@ -354,17 +387,14 @@ export async function updateProfile(
   }
 
   const mode = input.defaultTaxMode ?? profile.defaultTaxMode;
-  const data: Prisma.InvoiceProfileUpdateInput = {};
+  const data: Partial<InvoiceProfileInsert> = {};
   // changed[] only contains keys present in the typed input, and every
   // ProfileUpdateInput field maps to a scalar column — safe to write through
-  // a Record view of Prisma's update input (escape hatch, commented per
-  // code-standards). Tax percent is cleared whenever the mode settles on NONE.
+  // a Record view of the insert type. Tax percent is cleared whenever the
+  // mode settles on NONE.
   for (const key of changed) {
     const value = input[key];
     if (value === undefined) continue;
-    // Every ProfileUpdateInput key maps to a same-named scalar column; the
-    // Record view skips Prisma's relation-keyed union (commented per
-    // code-standards escape-hatch rule).
     (data as Record<string, unknown>)[key] =
       key === "defaultTaxPercent" && mode === "NONE" ? null : value;
   }
@@ -372,16 +402,24 @@ export async function updateProfile(
     data.defaultTaxPercent = null;
   }
 
-  let updated: InvoiceProfile;
+  let updated: InvoiceProfile | undefined;
   try {
-    updated = await db.invoiceProfile.update({ where: { id: profileId }, data });
+    const rows = await db
+      .update(invoiceProfiles)
+      .set(data)
+      .where(eq(invoiceProfiles.id, profileId))
+      .returning();
+    updated = rows[0];
   } catch (error) {
+    // Drizzle surfaces Postgres unique violations as `unique_constraint` /
+    // code 23505 — the profile code is the only unique column pair in play.
     const code = (error as { code?: string }).code;
-    if (code === "P2002") {
+    if (code === "23505" || code === "unique_constraint") {
       throw new AppError("CONFLICT", "Kode profil invoice sudah dipakai di organisasi ini.");
     }
     throw error;
   }
+  if (!updated) throw new AppError("INTERNAL_ERROR", "Profil invoice gagal diperbarui.");
 
   if (changed.length > 0) {
     await writeAudit(ctx, profileId, { change: "updated", fields: changed });
@@ -405,10 +443,13 @@ export async function replaceLogo(
     allowedMimeTypes: IMAGE_MIME_TYPES,
   });
 
-  const updated = await db.invoiceProfile.update({
-    where: { id: profile.id },
-    data: { logoPath: stored.path },
-  });
+  const rows = await db
+    .update(invoiceProfiles)
+    .set({ logoPath: stored.path })
+    .where(eq(invoiceProfiles.id, profile.id))
+    .returning();
+  const updated = rows[0];
+  if (!updated) throw new AppError("INTERNAL_ERROR", "Profil invoice gagal diperbarui.");
 
   if (profile.logoPath) {
     // Best-effort cleanup of the previous logo — never fails the save.
@@ -430,10 +471,13 @@ export async function removeLogo(profileId: string, ctx: ProfileServiceContext):
   const profile = await loadForUpdate(profileId, ctx);
   if (!profile.logoPath) return profile;
 
-  const updated = await db.invoiceProfile.update({
-    where: { id: profile.id },
-    data: { logoPath: null },
-  });
+  const rows = await db
+    .update(invoiceProfiles)
+    .set({ logoPath: null })
+    .where(eq(invoiceProfiles.id, profile.id))
+    .returning();
+  const updated = rows[0];
+  if (!updated) throw new AppError("INTERNAL_ERROR", "Profil invoice gagal diperbarui.");
   await getStorageService()
     .delete(profile.logoPath)
     .catch((error: unknown) =>

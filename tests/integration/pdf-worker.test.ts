@@ -20,7 +20,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { AppError, isAppError } from "@/lib/errors";
 import { env } from "@/server/env";
-import { db } from "@/server/db";
+import { db } from "@/tests/helpers/test-db";
 import { createProfile } from "@/modules/profiles/service";
 import { saveBankAccount } from "@/modules/bank-accounts/service";
 import { saveSigner } from "@/modules/signers/service";
@@ -36,7 +36,6 @@ import {
 } from "@/modules/pdf/service";
 import { verifyPdfToken, type RenderTokenPayload } from "@/modules/pdf/token";
 import { runOnce, RETRY_COOLDOWN_MS } from "@/modules/pdf/worker";
-import type { OrganizationRole } from "@prisma/client";
 import {
   addMembership,
   createOrganization,
@@ -44,6 +43,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 const PDF_BYTES = Buffer.from(
   "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<<>>\n%%EOF\n",
@@ -68,17 +68,11 @@ const originalPdfServiceUrl = env.PDF_SERVICE_URL;
 /** Every /render the fake received (printUrl is proof the app signed it). */
 const receivedPrintUrls: string[] = [];
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): PdfServiceContext {
-  return { scope: { organizationId, role, userId }, request: null };
-}
-const ownerCtx = () => ctxFor(org.id, "OWNER", owner.id);
-const staffCtx = () => ctxFor(org.id, "STAFF", staff.id);
-const viewerCtx = () => ctxFor(org.id, "VIEWER", viewer.id);
-const foreignCtx = () => ctxFor(foreignOrg.id, "OWNER", owner.id);
+// Change 6: role tiers are gone — ctxFor comes from the shared test helper.
+const ownerCtx = () => ctxFor(org.id, owner.id);
+const staffCtx = () => ctxFor(org.id, staff.id);
+const viewerCtx = () => ctxFor(org.id, viewer.id);
+const foreignCtx = () => ctxFor(foreignOrg.id, owner.id);
 
 function draftValues(overrides: Partial<InvoiceDraftFormOutput> = {}): InvoiceDraftFormOutput {
   return {
@@ -121,19 +115,19 @@ beforeAll(async () => {
   owner = await createUser({ username: "pdf.owner" });
   staff = await createUser({ username: "pdf.staff" });
   viewer = await createUser({ username: "pdf.viewer" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   foreignOrg = await createOrganization("Org Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(staff.id, org.id, "STAFF");
   await addMembership(viewer.id, org.id, "VIEWER");
 
-  const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
 
   const customer = await createCustomer(
     {
-      companyName: "PT Dharma Polimetal Tbk",
-      legalName: "PT Dharma Polimetal Tbk",
+      companyName: "PT Cipta Karya Nusantara",
+      legalName: "PT Cipta Karya Nusantara",
       businessType: "Manufaktur",
       taxId: "01.2345.6789.000005",
       address: "Jl. Industri No. 7",
@@ -143,7 +137,7 @@ beforeAll(async () => {
       country: "Indonesia",
       phone: "0215550177",
       whatsapp: "",
-      email: "ap@dharma.co.id",
+      email: "ap@ciptakarya.co.id",
       isActive: true,
     },
     ownerCtx(),
@@ -154,14 +148,14 @@ beforeAll(async () => {
     {
       bankName: "Bank Uji",
       accountNumber: "1234567890123456",
-      accountHolder: "PT Karya Nusantara",
+      accountHolder: "PT CreaInvoice Studio",
       branch: "KCP Sudirman",
     },
     ownerCtx(),
   );
   bankId = bank.id;
   const signer = await saveSigner(
-    { name: "Karya Nusantara", title: "Direktur", location: "Yogyakarta" },
+    { name: "CreaInvoice Studio", title: "Direktur", location: "Yogyakarta" },
     ownerCtx(),
   );
   signerId = signer.id;

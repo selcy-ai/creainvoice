@@ -39,11 +39,11 @@ import { getInvoiceDetail, type InvoiceDetailView } from "@/modules/invoices/det
 import { getInvoicePaymentPanel, type InvoicePaymentPanel } from "@/modules/payments/service";
 import { PaymentHistory } from "@/components/payments/payment-history";
 import { INVOICE_TYPE_LABELS, INVOICE_TAX_MODE_LABELS } from "@/modules/invoices/schema";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Detail invoice — invoice-me",
+  title: "Detail invoice — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -102,7 +102,7 @@ export default async function InvoiceDetailPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) redirect("/invoices");
 
   let invoice: InvoiceDetailView;

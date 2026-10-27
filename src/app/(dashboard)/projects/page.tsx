@@ -7,17 +7,16 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { PlusIcon } from "lucide-react";
-import { PROJECTS_PAGE_SIZE } from "@/modules/admin/constants";
+import { PROJECTS_PAGE_SIZE } from "@/modules/workspace/constants";
 import { ProjectsTable } from "@/components/tables/projects-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { can } from "@/modules/permissions/service";
 import { listProjects } from "@/modules/projects/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const metadata: Metadata = {
-  title: "Project / PO — invoice-me",
+  title: "Project / PO — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -34,7 +33,7 @@ export default async function ProjectsPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   const params = await searchParams;
   const requestedPage = Number(first(params.page) ?? "1");
   const page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.trunc(requestedPage) : 1;
@@ -57,7 +56,7 @@ export default async function ProjectsPage({
   }
 
   const result = await listProjects({ scope }, { page, pageSize: PROJECTS_PAGE_SIZE, q });
-  const mayCreate = can("project.create", scope);
+  const mayCreate = Boolean(scope);
 
   return (
     <div className="flex flex-col gap-6">

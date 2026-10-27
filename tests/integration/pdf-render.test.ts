@@ -40,7 +40,6 @@ import {
   type RenderTokenPayload,
 } from "@/modules/pdf/token";
 import { GET as printRouteGet } from "@/app/print/invoices/[id]/route";
-import type { OrganizationRole } from "@prisma/client";
 import {
   addMembership,
   createOrganization,
@@ -48,6 +47,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let owner: TestUser;
 let org: { id: string };
@@ -59,14 +59,7 @@ let signerId: string;
 let sampleInvoiceId: string;
 let multipageInvoiceId: string;
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-) {
-  return { scope: { organizationId, role, userId }, request: null };
-}
-const ownerCtx = () => ctxFor(org.id, "OWNER", owner.id);
+const ownerCtx = () => ctxFor(org.id, owner.id);
 
 function draftValues(overrides: Partial<InvoiceDraftFormOutput> = {}): InvoiceDraftFormOutput {
   return {
@@ -199,7 +192,7 @@ function renderPayloadFor(input: {
   referenceType: string | null;
   referenceNumber: string | null;
 }): RenderTokenPayload {
-  const issuerName = "Karya Nusantara";
+  const issuerName = "CreaInvoice Studio";
   return {
     p: "render",
     printUrl: `http://127.0.0.1:${appSimPort}/print/invoices/${input.invoiceId}?token=placeholder`,
@@ -208,7 +201,7 @@ function renderPayloadFor(input: {
     footer: invoicePdfFooter({
       referenceType: input.referenceType,
       referenceNumber: input.referenceNumber,
-      customerName: "PT Dharma Polimetal Tbk",
+      customerName: "PT Cipta Karya Nusantara",
       issuerName,
     }),
     title: input.number,
@@ -221,16 +214,16 @@ beforeAll(async () => {
   await resetDatabase();
 
   owner = await createUser({ username: "render.owner" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   await addMembership(owner.id, org.id, "OWNER");
 
-  const profile = await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" });
+  const profile = await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" });
   profileId = profile.id;
 
   const customer = await createCustomer(
     {
-      companyName: "PT Dharma Polimetal Tbk",
-      legalName: "PT Dharma Polimetal Tbk",
+      companyName: "PT Cipta Karya Nusantara",
+      legalName: "PT Cipta Karya Nusantara",
       businessType: "Manufaktur",
       taxId: "01.2345.6789.000007",
       address: "Jl. Industri No. 7",
@@ -240,7 +233,7 @@ beforeAll(async () => {
       country: "Indonesia",
       phone: "0215550177",
       whatsapp: "",
-      email: "ap@dharma.co.id",
+      email: "ap@ciptakarya.co.id",
       isActive: true,
     },
     ownerCtx(),
@@ -251,14 +244,14 @@ beforeAll(async () => {
     {
       bankName: "Bank Mandiri",
       accountNumber: "1234567890123456",
-      accountHolder: "PT Karya Nusantara",
+      accountHolder: "PT CreaInvoice Studio",
       branch: "KCP Sudirman",
     },
     ownerCtx(),
   );
   bankId = bank.id;
   const signer = await saveSigner(
-    { name: "Karya Nusantara", title: "Direktur", location: "Yogyakarta" },
+    { name: "CreaInvoice Studio", title: "Direktur", location: "Yogyakarta" },
     ownerCtx(),
   );
   signerId = signer.id;
@@ -365,7 +358,7 @@ describe("print route token gate", () => {
 
     // Document identity (rendered from the snapshot, not live relations).
     expect(html).toContain("INV/SB/VII/2026/001");
-    expect(html).toContain("PT Dharma Polimetal Tbk");
+    expect(html).toContain("PT Cipta Karya Nusantara");
     expect(html).toContain("DOWN PAYMENT 50%");
     expect(html).toContain("5198021181");
     expect(html).toContain("Dua juta dua ratus lima puluh ribu rupiah");
@@ -454,7 +447,7 @@ describe("pdf-service", () => {
     const parser = new PDFParse({ data: new Uint8Array(bytes) });
     const info = await parser.getInfo();
     expect(info.info?.Title).toBe("INV/SB/VII/2026/001");
-    expect(info.info?.Author).toBe("Karya Nusantara");
+    expect(info.info?.Author).toBe("CreaInvoice Studio");
 
     // Selectable text (bukan screenshot) — pdf-parse extracts the document.
     const text = await parser.getText();
@@ -473,7 +466,7 @@ describe("pdf-service", () => {
     // Page footer from the PDF engine (bukan statis).
     expect(lowerNormalized(text.text)).toContain(
       lowerNormalized(
-        "Invoice ini dibuat berdasarkan Purchase Order PT Dharma Polimetal Tbk Nomor 5198021181.",
+        "Invoice ini dibuat berdasarkan Purchase Order PT Cipta Karya Nusantara Nomor 5198021181.",
       ),
     );
     expect(flat).toContain(normalized("Halaman 1 dari 1"));
@@ -519,10 +512,10 @@ describe("pdf-service", () => {
     expect(flat).toContain(normalized("Halaman 2 dari 2"));
     // Issuer reference line (no PO on this one).
     expect(lowerNormalized(text.text)).toContain(
-      lowerNormalized("Invoice ini diterbitkan oleh Karya Nusantara."),
+      lowerNormalized("Invoice ini diterbitkan oleh CreaInvoice Studio."),
     );
     // The grand total shows on page 2 with the signature block.
     expect(flat).toContain(normalized("Rp 4.500.000"));
-    expect(page2Text).toContain("Karya Nusantara");
+    expect(page2Text).toContain("CreaInvoice Studio");
   }, 90_000);
 });

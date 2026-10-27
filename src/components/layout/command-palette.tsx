@@ -33,13 +33,12 @@ import type { InvoiceQuickMatch } from "@/modules/invoices/query-service";
 
 export interface CommandPaletteProps {
   navVisibility: NavVisibility;
-  isSuperAdmin: boolean;
 }
 
 /** Debounce before hitting the server (a keystroke is not a query). */
 const SEARCH_DEBOUNCE_MS = 250;
 
-export function CommandPalette({ navVisibility, isSuperAdmin }: CommandPaletteProps) {
+export function CommandPalette({ navVisibility }: CommandPaletteProps) {
   const { guardedPush } = useNavigationBlocker();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -95,10 +94,10 @@ export function CommandPalette({ navVisibility, isSuperAdmin }: CommandPalettePr
 
   const routes = React.useMemo(
     () =>
-      NAV_GROUPS.filter((group) => !group.adminOnly || isSuperAdmin).flatMap((group) =>
+      NAV_GROUPS.flatMap((group) =>
         visibleLinks(group.links, navVisibility),
       ),
-    [navVisibility, isSuperAdmin],
+    [navVisibility],
   );
 
   function go(href: string) {

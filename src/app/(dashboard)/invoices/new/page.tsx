@@ -8,19 +8,18 @@
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
-import { can } from "@/modules/permissions/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
 import { getEditorOptionsAction, prefillInvoiceFromProjectAction } from "@/modules/invoices/actions";
 import {
   INVOICE_TYPES,
   type InvoiceTypeValue,
 } from "@/modules/invoices/schema";
-import { getSession } from "@/server/session";
+import { getSession } from "@/lib/clerk";
 import { InvoiceEditor } from "@/components/invoice/invoice-editor";
 import { logger } from "@/server/logger";
 
 export const metadata: Metadata = {
-  title: "Invoice baru — invoice-me",
+  title: "Invoice baru — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -33,9 +32,9 @@ export default async function NewInvoicePage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) redirect("/invoices");
-  if (!can("invoice.draft.create", scope)) redirect("/invoices");
+  if (!Boolean(scope)) redirect("/invoices");
 
   const optionsResult = await getEditorOptionsAction();
   if (!optionsResult.ok) {

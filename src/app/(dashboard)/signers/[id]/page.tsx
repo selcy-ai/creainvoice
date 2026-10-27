@@ -12,14 +12,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { SignerForm } from "@/components/signers/signer-form";
 import { DeleteSignerButton } from "@/components/signers/delete-signer-button";
-import { can } from "@/modules/permissions/service";
 import { getSignerDetail } from "@/modules/signers/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 import { isAppError } from "@/lib/errors";
 
 export const metadata: Metadata = {
-  title: "Detail Penanda Tangan — invoice-me",
+  title: "Detail Penanda Tangan — creainvoice",
 };
 
 export const dynamic = "force-dynamic";
@@ -32,7 +31,7 @@ export default async function SignerDetailPage({
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) redirect("/login");
 
   const { id } = await params;
@@ -44,8 +43,8 @@ export default async function SignerDetailPage({
     throw error;
   }
 
-  const mayEdit = can("signer.update", scope);
-  const mayDelete = can("signer.delete", scope);
+  const mayEdit = Boolean(scope);
+  const mayDelete = Boolean(scope);
 
   return (
     <div className="flex flex-col gap-6">

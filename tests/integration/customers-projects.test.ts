@@ -9,7 +9,7 @@
 //   - cross-org ids answer 404 (IDOR guard), org isolation on both lists
 //   - NPWP never appears in audit metadata
 //   - prefillFromProject hands feature 04 an EMPTY items list (honest, not a 0)
-//   - `prisma/seed.mjs` seeds a demo workspace searchable by "Dharma"
+//   - `scripts/seed.mjs` seeds a demo workspace searchable by "Cipta"
 
 import { execFileSync } from "node:child_process";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -40,8 +40,7 @@ import {
 } from "@/modules/projects/service";
 import type { ProjectFormInput } from "@/modules/projects/service";
 import { REFERENCE_TYPES } from "@/modules/projects/schema";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
 import {
   addMembership,
   createOrganization,
@@ -49,6 +48,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 const NPWP = "01.2345.6789.000001";
 const NPWP_DIGITS = "0123456789000001";
@@ -75,24 +75,17 @@ let viewerId: string;
 let org: { id: string };
 let otherOrg: { id: string };
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 
 function ownerCtx(organizationId?: string) {
-  return ctxFor(organizationId ?? org.id, "OWNER", owner.id);
+  return ctxFor(organizationId ?? org.id, owner.id);
 }
 
 function staffCtx() {
-  return ctxFor(org.id, "STAFF", staffId);
+  return ctxFor(org.id, staffId);
 }
 
 function viewerCtx() {
-  return ctxFor(org.id, "VIEWER", viewerId);
+  return ctxFor(org.id, viewerId);
 }
 
 async function expectAppFailure(
@@ -207,7 +200,7 @@ describe("customer CRUD + soft delete", () => {
     const customer = await createCustomer(customerInput({ companyName: "PT Hapus Ini" }), ownerCtx());
     const pic = await addContact(
       customer.id,
-      { name: "Budi Santoso", title: "Finance", isPrimary: true },
+      { name: "Andi Wijaya", title: "Finance", isPrimary: true },
       ownerCtx(),
     );
 
@@ -354,13 +347,13 @@ describe("server-side pagination and search", () => {
     expect(firstPage.rows[0]!.companyName <= firstPage.rows[1]!.companyName).toBe(true);
   });
 
-  it('search is case-insensitive and finds "Dharma"', async () => {
-    await createCustomer(customerInput({ companyName: "PT Dharma Polimetal Tbk" }), ownerCtx());
+  it('search is case-insensitive and finds "Cipta"', async () => {
+    await createCustomer(customerInput({ companyName: "PT Cipta Karya Nusantara" }), ownerCtx());
 
-    const upper = await listCustomers(ownerCtx(), { q: "Dharma" });
-    const lower = await listCustomers(ownerCtx(), { q: "dharma" });
-    expect(upper.rows.some((row) => row.companyName === "PT Dharma Polimetal Tbk")).toBe(true);
-    expect(lower.rows.some((row) => row.companyName === "PT Dharma Polimetal Tbk")).toBe(true);
+    const upper = await listCustomers(ownerCtx(), { q: "Cipta" });
+    const lower = await listCustomers(ownerCtx(), { q: "cipTa karYa" });
+    expect(upper.rows.some((row) => row.companyName === "PT Cipta Karya Nusantara")).toBe(true);
+    expect(lower.rows.some((row) => row.companyName === "PT Cipta Karya Nusantara")).toBe(true);
 
     const miss = await listCustomers(ownerCtx(), { q: "Tidak Ada Perusahaan Ini" });
     expect(miss.rows).toHaveLength(0);
@@ -372,7 +365,7 @@ describe("server-side pagination and search", () => {
     expect(result.page).toBe(1);
     expect(result.rows.length).toBeGreaterThan(0);
 
-    const otherResult = await listCustomers(ownerCtx(otherOrg.id), { q: "Dharma" });
+    const otherResult = await listCustomers(ownerCtx(otherOrg.id), { q: "Cipta" });
     expect(otherResult.rows).toHaveLength(0);
     expect(otherResult.total).toBe(0);
 
@@ -566,56 +559,58 @@ describe("PO attachment upload (MIME decided by content)", () => {
   });
 });
 
-describe("authorization (VIEWER vs STAFF)", () => {
-  it("denies every customer/PIC write to VIEWER with FORBIDDEN", async () => {
+describe("authorization — flat workspace (Change 6: no role tiers)", () => {
+  // Every member of an organization is a full admin: writes that used to be
+  // refused to VIEWER now succeed for them, because the only gate left is a
+  // verified membership in an ACTIVE organization.
+  it("allows every customer/PIC write to any member (VIEWER included)", async () => {
     const customer = await createCustomer(customerInput({ companyName: "PT Uji Viewer" }), ownerCtx());
     const pic = await addContact(customer.id, { name: "Wati Rahayu", isPrimary: true }, ownerCtx());
 
-    const failure = await expectAppFailure(createCustomer(customerInput(), viewerCtx()), "FORBIDDEN");
-    expect(failure.message).toMatch(/izin/i);
-    await expectAppFailure(
-      updateCustomer(customer.id, customerInput({ companyName: "Direview Viewer" }), viewerCtx()),
-      "FORBIDDEN",
+    const byViewer = await createCustomer(customerInput({ companyName: "PT Buatan Viewer" }), viewerCtx());
+    expect(byViewer.organizationId).toBe(org.id);
+    const updated = await updateCustomer(
+      customer.id,
+      customerInput({ companyName: "Direview Viewer" }),
+      viewerCtx(),
     );
-    await expectAppFailure(softDeleteCustomer(customer.id, viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(
-      addContact(customer.id, { name: "Dicuri Juga", isPrimary: true }, viewerCtx()),
-      "FORBIDDEN",
+    expect(updated.companyName).toBe("Direview Viewer");
+    const contact = await addContact(
+      customer.id,
+      { name: "Dicuri Juga", isPrimary: false },
+      viewerCtx(),
     );
-    await expectAppFailure(
-      updateContact(pic.id, { name: "Dicuri", isPrimary: true }, viewerCtx()),
-      "FORBIDDEN",
-    );
-    await expectAppFailure(deleteContact(pic.id, viewerCtx()), "FORBIDDEN");
+    await updateContact(pic.id, { name: "Diupdate Viewer", isPrimary: true }, viewerCtx());
+    await deleteContact(contact.id, viewerCtx());
+    await softDeleteCustomer(customer.id, viewerCtx());
 
-    // Nothing changed on disk-of-truth, and VIEWER can still read.
-    const after = await getCustomerForScope(customer.id, ownerCtx());
-    expect(after.companyName).toBe("PT Uji Viewer");
-    const readable = await listCustomers(viewerCtx(), { q: "PT Uji Viewer" });
-    expect(readable.rows).toHaveLength(1);
-
-    await softDeleteCustomer(customer.id, ownerCtx());
+    // The write landed and is readable by every member.
+    // The write landed: the soft delete is visible to every member.
+    await expectAppFailure(getCustomerForScope(customer.id, ownerCtx()), "NOT_FOUND");
+    const readable = await listCustomers(viewerCtx(), { q: "Direview Viewer" });
+    expect(readable.rows).toHaveLength(0);
   });
 
-  it("denies every project write to VIEWER and allows STAFF", async () => {
+  it("allows every project write to any member (VIEWER included)", async () => {
     const customer = await createCustomer(customerInput({ companyName: "PT Uji Staff" }), ownerCtx());
     const project = await createProject(projectInput(customer.id), ownerCtx());
 
-    await expectAppFailure(createProject(projectInput(customer.id), viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(
-      updateProject(project.id, projectInput(customer.id, { title: "Diedit Viewer" }), viewerCtx()),
-      "FORBIDDEN",
+    // Flat workspace: the same writes succeed for any member.
+    const viewerProject = await createProject(projectInput(customer.id), viewerCtx());
+    expect(viewerProject.organizationId).toBe(org.id);
+    const viewerUpdated = await updateProject(
+      project.id,
+      projectInput(customer.id, { title: "Diedit Viewer" }),
+      viewerCtx(),
     );
-    await expectAppFailure(deleteProject(project.id, viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(
-      uploadProjectAttachment(
-        project.id,
-        new File([PDF_BYTES], "po.pdf", { type: "application/pdf" }),
-        viewerCtx(),
-      ),
-      "FORBIDDEN",
+    expect(viewerUpdated.title).toBe("Diedit Viewer");
+    const viewerUpload = await uploadProjectAttachment(
+      project.id,
+      new File([PDF_BYTES], "po.pdf", { type: "application/pdf" }),
+      viewerCtx(),
     );
-    await expectAppFailure(removeProjectAttachment(project.id, viewerCtx()), "FORBIDDEN");
+    expect(viewerUpload.attachmentPath).toMatch(/\.pdf$/);
+    await removeProjectAttachment(project.id, viewerCtx());
 
     // STAFF is a writer for feature 03 (permission matrix: customer.* project.*).
     const staffCustomer = await createCustomer(
@@ -632,8 +627,8 @@ describe("authorization (VIEWER vs STAFF)", () => {
     );
     expect(staffUpload.attachmentPath).toMatch(/\.pdf$/);
 
-    const unchanged = await getProjectForScope(project.id, ownerCtx());
-    expect(unchanged.title).toBe("Pengadaan Bracket Frame");
+    await deleteProject(project.id, viewerCtx());
+    await expectAppFailure(getProjectForScope(project.id, ownerCtx()), "NOT_FOUND");
   });
 });
 
@@ -714,39 +709,36 @@ describe("invoice prefill hook (feature 04 preparation)", () => {
   });
 });
 
-describe("seed (prisma/seed.mjs)", () => {
+describe("seed (scripts/seed.mjs, Change 6: Drizzle + neutral demo data)", () => {
   it(
-    "seeds a demo workspace whose customer is found by search \"Dharma\"",
+    "seeds a demo workspace whose customer is found by search \"Cipta\"",
     async () => {
-      execFileSync(process.execPath, ["prisma/seed.mjs"], {
+      execFileSync(process.execPath, ["scripts/seed.mjs"], {
         cwd: process.cwd(),
         env: {
-          ...process.env,
           // Hermetic: the child writes to the TEST database (DATABASE_URL is
           // already the test URL in this process and seed only fills gaps).
-          SEED_ADMIN_USERNAME: "seed.admin",
-          SEED_ADMIN_EMAIL: "seed.admin@example.test",
-          SEED_ADMIN_PASSWORD: "Seed-Passw0rd-1",
+          ...process.env,
         },
         stdio: "pipe",
       });
 
-      const demoOrg = await db.organization.findUnique({ where: { slug: "workspace-demo" } });
+      const demoOrg = await db.organization.findUnique({ where: { slug: "crea-invoice-studio" } });
       expect(demoOrg).not.toBeNull();
 
-      const seedAdmin = await db.user.findUnique({ where: { username: "seed.admin" } });
+      const seedAdmin = await db.user.findUnique({ where: { username: "admin" } });
       expect(seedAdmin).not.toBeNull();
 
-      // The seed admin belongs to the demo org as OWNER (the seed's own contract).
+      // The demo admin belongs to the demo org (the seed's own contract).
       const membership = await db.membership.findFirst({
-        where: { userId: seedAdmin!.id, organizationId: demoOrg!.id, role: "OWNER" },
+        where: { userId: seedAdmin!.id, organizationId: demoOrg!.id },
       });
       expect(membership).not.toBeNull();
 
-      const ctx = ctxFor(demoOrg!.id, "OWNER", seedAdmin!.id);
-      const found = await listCustomers(ctx, { q: "Dharma" });
+      const ctx = ctxFor(demoOrg!.id, seedAdmin!.id);
+      const found = await listCustomers(ctx, { q: "Cipta" });
       expect(found.rows.length).toBeGreaterThanOrEqual(1);
-      expect(found.rows.some((row) => row.companyName === "PT Dharma Polimetal Tbk")).toBe(true);
+      expect(found.rows.some((row) => row.companyName === "PT Cipta Karya Nusantara")).toBe(true);
 
       const project = await db.projectReference.findFirst({
         where: { organizationId: demoOrg!.id, referenceNumber: "5198021181" },
@@ -755,18 +747,13 @@ describe("seed (prisma/seed.mjs)", () => {
       expect(project!.referenceType).toBe("PURCHASE_ORDER");
 
       // Idempotent: a second run must not duplicate the customer.
-      execFileSync(process.execPath, ["prisma/seed.mjs"], {
+      execFileSync(process.execPath, ["scripts/seed.mjs"], {
         cwd: process.cwd(),
-        env: {
-          ...process.env,
-          SEED_ADMIN_USERNAME: "seed.admin",
-          SEED_ADMIN_EMAIL: "seed.admin@example.test",
-          SEED_ADMIN_PASSWORD: "Seed-Passw0rd-1",
-        },
+        env: { ...process.env },
         stdio: "pipe",
       });
       const customers = await db.customer.count({
-        where: { organizationId: demoOrg!.id, companyName: "PT Dharma Polimetal Tbk" },
+        where: { organizationId: demoOrg!.id, companyName: "PT Cipta Karya Nusantara" },
       });
       expect(customers).toBe(1);
     },

@@ -1,18 +1,7 @@
-import { PrismaClient } from "@prisma/client";
+// src/server/db.ts — re-export of the Drizzle client (Change 6).
+//
+// kept as a stable import path: 50+ modules import `db` from "@/server/db"
+// (the Prisma client lived here before the migration). The real client is
+// src/db/client.ts (Neon serverless driver).
 
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | undefined;
-};
-
-export const db =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    log:
-      process.env.NODE_ENV === "development"
-        ? ["query", "error", "warn"]
-        : ["error"],
-  });
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = db;
-}
+export { db, type Database } from "@/db/client";

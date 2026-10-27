@@ -1,0 +1,18 @@
+Continue building change spec 13-change-creainvoice-clerk-neon-drizzle. The previous session hit the model's context limit and stopped; its full work is uncommitted in the working tree — 192 files changed (128 modified, 57 deleted, 7 new), on disk, not staged.
+
+Do NOT start over. Pick up where it left off. State verified at stop time:
+- Drizzle installed (src/db/schema.ts, client.ts, enums.ts, id.ts exist); package.json has drizzle and @clerk/nextjs.
+- Clerk webhook route exists at src/app/api/clerk/webhook/route.ts; Clerk organizations integration written.
+- Modules admin/, organizations/, permissions/ and the /admin/* platform pages are deleted (57 files deleted).
+- The previous session had just written tests/helpers/query.ts — a Prisma-shape helper over Drizzle so the many test files that call db.invoice.findUnique({where:{id}}) style assertions can keep working. That helper is the bridge for the test suite: test files that use the old Prisma client API should route through tests/helpers/query.ts rather than be rewritten one by one.
+- 2 files still reference better-auth, 1 src file still imports @prisma/client; prisma/schema.prisma and prisma/migrations still exist.
+
+Remaining work, in order:
+1. Finish the Prisma → Drizzle test migration via the query helper; make the unit + integration suite green (the suite ran 723/723 before this change; tests covering the deleted admin/organizations/permissions platform modules should be removed, not left red).
+2. Remove the last better-auth references and the last @prisma/client import; decide whether prisma/ is still needed (keep prisma/schema.prisma only as historical reference if the spec needs it, otherwise delete).
+3. Seed rewrite with the neutral demo data (CreaInvoice Studio, admin@creainvoice.id, PT Cipta Karya Nusantara, Andi Wijaya) through Drizzle, and push the schema to Neon (DATABASE_URL is in .env — read it, never print it in full).
+4. Run every Check When Done item: npm run build, npm run lint (0 errors), npm run typecheck, unit+integration suite green, and an E2E login smoke through Clerk if it can be done without real Clerk keys in the env (if the keys are missing, document that the E2E Clerk login must be verified by the engineer and say why).
+5. Update context/progress-tracker.md per the spec's Progress Tracker section.
+6. Commit and push: trunk-based on main, message "feat: rebrand to creainvoice + migrate auth to Clerk and DB to Neon/Drizzle", tag feat-13, push origin main (default credentials work; remote is https://github.com/selcy-ai/creainvoice.git). Given the size, commit in logical chunks if you prefer, but the final tag feat-13 must be on the last commit.
+
+Context budget: this repo is large and the previous session ran out. Be efficient: prefer grep and targeted reads over reading whole files; never re-read the full chat history; do not re-do work that is already on disk. A red test or failed check is a stop condition — do not commit around failures. If something cannot pass because the spec is wrong, stop and say so.

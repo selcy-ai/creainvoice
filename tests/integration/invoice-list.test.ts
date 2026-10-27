@@ -33,8 +33,7 @@ import {
   quickSearchInvoices,
   type InvoiceListQuery,
 } from "@/modules/invoices/query-service";
-import { db } from "@/server/db";
-import type { OrganizationRole } from "@prisma/client";
+import { db } from "@/tests/helpers/test-db";
 import {
   addMembership,
   createOrganization,
@@ -42,6 +41,7 @@ import {
   resetDatabase,
   type TestUser,
 } from "../factories";
+import { ctxFor } from "@/tests/helpers/context";
 
 let owner: TestUser;
 let staff: TestUser;
@@ -51,7 +51,7 @@ let otherOrg: { id: string };
 
 let profileId: string;
 let foreignProfileId: string;
-let cDharma: string;
+let cCipta: string;
 let cSentosa: string;
 let foreignCustomer: string;
 let projectId: string;
@@ -72,17 +72,10 @@ function shift(days: number): string {
 const daysAgo = (days: number): string => shift(-days);
 const daysFromNow = (days: number): string => shift(days);
 
-function ctxFor(
-  organizationId: string,
-  role: OrganizationRole,
-  userId: string,
-): { scope: { organizationId: string; role: OrganizationRole; userId: string }; request: null } {
-  return { scope: { organizationId, role, userId }, request: null };
-}
 const ownerCtx = (organizationId?: string) =>
-  ctxFor(organizationId ?? org.id, "OWNER", owner.id);
-const staffCtx = () => ctxFor(org.id, "STAFF", staff.id);
-const viewerCtx = () => ctxFor(org.id, "VIEWER", viewer.id);
+  ctxFor(organizationId ?? org.id, owner.id);
+const staffCtx = () => ctxFor(org.id, staff.id);
+const viewerCtx = () => ctxFor(org.id, viewer.id);
 
 async function expectAppFailure(
   promise: Promise<unknown>,
@@ -127,7 +120,7 @@ function draftInput(overrides: Partial<InvoiceDraftFormOutput> = {}): InvoiceDra
   return {
     profileId,
     invoiceType: "FULL",
-    customerId: cDharma,
+    customerId: cCipta,
     billingMode: "PERCENT",
     billingPercent: "100",
     invoiceDate: daysAgo(20),
@@ -163,15 +156,15 @@ beforeAll(async () => {
   owner = await createUser({ username: "list.owner" });
   staff = await createUser({ username: "list.staff" });
   viewer = await createUser({ username: "list.viewer" });
-  org = await createOrganization("Karya Nusantara");
+  org = await createOrganization("CreaInvoice Studio");
   otherOrg = await createOrganization("Organisasi Lain");
   await addMembership(owner.id, org.id, "OWNER");
   await addMembership(staff.id, org.id, "STAFF");
   await addMembership(viewer.id, org.id, "VIEWER");
   await addMembership(owner.id, otherOrg.id, "OWNER");
 
-  profileId = (await createProfile(ownerCtx(), { name: "Karya Nusantara", code: "SB" })).id;
-  cDharma = (await createCustomer(customerInput("PT Dharma Karya Prima"), ownerCtx())).id;
+  profileId = (await createProfile(ownerCtx(), { name: "CreaInvoice Studio", code: "SB" })).id;
+  cCipta = (await createCustomer(customerInput("PT Cipta Karya Prima"), ownerCtx())).id;
   cSentosa = (await createCustomer(customerInput("PT Sentosa Makmur"), ownerCtx())).id;
 
   const project = await createProject(
@@ -188,12 +181,12 @@ beforeAll(async () => {
   projectId = project.id;
 
   // Fixture matrix (org-scoped unless noted):
-  //   draftA    Dharma  FULL           DRAFT           invoiceDate −20d
+  //   draftA    Cipta  FULL           DRAFT           invoiceDate −20d
   //   draftB    Sentosa DOWN_PAYMENT   DRAFT           −15d, linked project
-  //   overdue   Dharma  FULL           ISSUED (→OVERDUE) −40d, due −10d
+  //   overdue   Cipta  FULL           ISSUED (→OVERDUE) −40d, due −10d
   //   issuedOk  Sentosa FULL           ISSUED          −5d,  due +10d
   //   partial   Sentosa DOWN_PAYMENT   PARTIALLY_PAID  −3d
-  //   paid      Dharma  FULL           PAID            −2d
+  //   paid      Cipta  FULL           PAID            −2d
   //   cancelled Sentosa FULL           CANCELLED       −30d
   await makeInvoice(
     "draftA",
@@ -354,13 +347,13 @@ describe("pagination + sort (Check When Done)", () => {
 // ─── Search ───────────────────────────────────────────────────────────────
 
 describe("search (Check When Done)", () => {
-  it("filters by customer name (Dharma)", async () => {
-    const result = await list(ownerCtx(), { search: "dharma", pageSize: 50 });
+  it("filters by customer name (Cipta)", async () => {
+    const result = await list(ownerCtx(), { search: "Cipta Karya", pageSize: 50 });
     expect(result.total).toBe(3);
     expect(result.rows.map((row) => row.id).sort()).toEqual(
       [ids.draftA, ids.overdue, ids.paid].sort(),
     );
-    expect(result.rows.every((row) => row.customerName.includes("Dharma"))).toBe(true);
+    expect(result.rows.every((row) => row.customerName.includes("Cipta"))).toBe(true);
   });
 
   it("filters by invoice number", async () => {
@@ -525,9 +518,9 @@ describe("org isolation (Check When Done)", () => {
 
 describe("command search + filter options", () => {
   it("quick search matches number/preview/customer, is capped and org-scoped", async () => {
-    const byCustomer = await quickSearchInvoices(ownerCtx(), { q: "Dharma" });
+    const byCustomer = await quickSearchInvoices(ownerCtx(), { q: "Cipta" });
     expect(byCustomer.length).toBeGreaterThanOrEqual(3);
-    expect(byCustomer.every((row) => row.customerName.includes("Dharma"))).toBe(true);
+    expect(byCustomer.every((row) => row.customerName.includes("Cipta"))).toBe(true);
 
     const issued = await db.invoice.findUnique({ where: { id: ids.overdue } });
     const byNumber = await quickSearchInvoices(ownerCtx(), { q: issued!.number! });
@@ -548,19 +541,19 @@ describe("command search + filter options", () => {
     const capped = await quickSearchInvoices(ownerCtx(), { q: "PT", limit: 2 });
     expect(capped.length).toBeLessThanOrEqual(2);
 
-    const foreign = await quickSearchInvoices(ownerCtx(otherOrg.id), { q: "Dharma" });
+    const foreign = await quickSearchInvoices(ownerCtx(otherOrg.id), { q: "Cipta" });
     expect(foreign).toEqual([]);
   });
 
   it("filter options only expose this organization's customers and profiles", async () => {
     const options = await listInvoiceFilterOptions(ownerCtx());
     expect(options.customers.map((row) => row.companyName).sort()).toEqual([
-      "PT Dharma Karya Prima",
+      "PT Cipta Karya Prima",
       "PT Sentosa Makmur",
     ]);
     // One invoice profile per organization (feature 02 rule) — the filter must
     // offer exactly this org's profile, and a foreign profile id matches 0 rows.
-    expect(options.profiles.map((row) => row.name)).toEqual(["Karya Nusantara"]);
+    expect(options.profiles.map((row) => row.name)).toEqual(["CreaInvoice Studio"]);
     const byProfile = await list(ownerCtx(), { profile: options.profiles[0]!.id, pageSize: 50 });
     expect(byProfile.total).toBe(7);
     const foreignProfileFilter = await list(ownerCtx(), { profile: foreignProfileId });

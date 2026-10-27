@@ -66,7 +66,7 @@ Bangun render PDF profesional via pdf-service terpisah: shared renderer (preview
 - [ ] Job gagal (mis. pdf-service mati) → retry maks 3, status FAILED, errorMessage jelas, invoice tetap ISSUED.
 - [ ] Download PDF: butuh session + org scope + permission; tanpa auth → 401/404; response `Content-Disposition: attachment; filename="INV-SB-VII-2026-001.pdf"`.
 - [ ] Audit `PDF_GENERATED` + `PDF_DOWNLOADED` tercatat.
-- [ ] **PDF acceptance** (master prompt bagian 33 sample): badge `DOWN PAYMENT 50%`; item 5 unit × Rp900.000; nilai pekerjaan Rp4.500.000; total ditagihkan Rp2.250.000; terbilang "Dua juta dua ratus lima puluh ribu rupiah"; slot e-meterai compact di kiri; signature di kanan; logo compact; footer `Invoice ini dibuat berdasarkan Purchase Order PT Dharma Polimetal Tbk Nomor 5198021181.`; `Halaman 1 dari 1`.
+- [ ] **PDF acceptance** (master prompt bagian 33 sample): badge `DOWN PAYMENT 50%`; item 5 unit × Rp900.000; nilai pekerjaan Rp4.500.000; total ditagihkan Rp2.250.000; terbilang "Dua juta dua ratus lima puluh ribu rupiah"; slot e-meterai compact di kiri; signature di kanan; logo compact; footer `Invoice ini dibuat berdasarkan Purchase Order PT Cipta Karya Nusantara Nomor 5198021181.`; `Halaman 1 dari 1`.
 - [ ] **Multi-page**: invoice dengan banyak item (seed 30+ item) → halaman 2 ada header tabel berulang, footer `Halaman 2 dari 2`, tidak ada halaman kosong, item row tidak terpotong.
 - [ ] PDF metadata terisi (Title invoice number, Author profile name).
 - [ ] Text PDF selectable (bukan screenshot): `pdf-parse` bisa ekstrak "INV/SB/VII/2026/001".

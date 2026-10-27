@@ -76,7 +76,7 @@ Migrasi feature 01: `20261005232013_auth_multi_tenant` (additive) — kolom plat
 | --- | --- | --- | --- |
 | id | String | @id, cuid | |
 | organizationId | String | relation | |
-| name | String | | mis. "Sigit Berkarya" |
+| name | String | | mis. "CreaInvoice Studio" |
 | code | String | | mis. "SB" |
 | legalName | String? | | |
 | logoPath | String? | | storage path |
@@ -381,5 +381,5 @@ Dicatat oleh `RecordingStorageService` (decorator di `getStorageService`) pada s
 - Feature 07: `20261008102333_payments` (additive) — tabel `Payment` + enum `PaymentMethod` + index; tidak ada perubahan pada tabel invoice selain pemakaian kolom `amountPaid`/`remainingAfter`/`status` yang sudah ada.
 - Feature 09: `20261008142337_feature09_super_admin_panel` (additive) — tabel `UploadRecord` + 3 nilai enum `AuditAction` baru; tidak ada perubahan pada tabel lain.
 - Feature 10: `20261009001701_bank_signers` (additive) — index `[organizationId]` di `BankAccount` dan `Signer`; tidak ada perubahan kolom/tabel lain (multi-account CRUD, `bankSnapshot.accountNumber`, dan token notes adalah perilaku aplikasi di atas skema yang sudah ada).
-- Seed (`prisma db seed`) terpisah dari migration, idempotent, hanya untuk dev/acceptance test data (master prompt bagian 33: Sigit Berkarya, PT Dharma Polimetal Tbk, PO 5198021181).
+- Seed (`prisma db seed`) terpisah dari migration, idempotent, hanya untuk dev/acceptance test data (master prompt bagian 33: CreaInvoice Studio, PT Cipta Karya Nusantara, PO 5198021181).
 - Breaking migration (rename column, change type) hanya jika feature spec eksplisit dan ada data migration script.

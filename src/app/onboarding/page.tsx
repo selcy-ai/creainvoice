@@ -1,34 +1,36 @@
 // src/app/onboarding/page.tsx
-// The 12-step wizard, outside the dashboard shell (the proxy allows only
-// unfinished users here and bounces finished ones to /dashboard). Everything
-// the steps need is loaded server-side: resume step, memberships, and the
-// already-saved profile/bank/signer snapshots.
+// The 12-step wizard, outside the dashboard shell. Everything the steps need
+// is loaded server-side: resume step, the Clerk organizations the user may
+// select, and the already-saved profile/bank/signer snapshots.
+//
+// Change 6: organizations come from CLERK (the webhook mirrors memberships
+// locally). Creating one happens through Clerk, so step 1 offers the Clerk
+// <OrganizationList> for creation/selection plus the local mirror list.
 
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { OnboardingWizard } from "@/components/onboarding/wizard";
 import { getOnboardingState } from "@/modules/onboarding/service";
-import { getWorkspaceOverview } from "@/modules/organizations/service";
+import { getWorkspaceOverview } from "@/modules/workspace/service";
 import { getProfileByOrg, toProfileView } from "@/modules/profiles/service";
 import { getDefaultBankAccount, toBankAccountView } from "@/modules/bank-accounts/service";
 import { getDefaultSigner, toSignerView } from "@/modules/signers/service";
-import { getSession } from "@/server/session";
+import { getSession } from "@/lib/clerk";
 import { env } from "@/server/env";
 
 export const metadata: Metadata = {
-  title: "Onboarding — invoice-me",
+  title: "Onboarding — CreaInvoice",
 };
 
 export const dynamic = "force-dynamic";
 
 export default async function OnboardingPage() {
   const session = await getSession();
-  if (!session) redirect("/login");
-  if (session.user.platformRole === "SUPER_ADMIN" || session.user.onboardingComplete === true) {
-    redirect("/dashboard");
-  }
+  if (!session?.userId) redirect("/login");
 
-  const state = await getOnboardingState(session.user.id);
+  const state = await getOnboardingState(session.userId);
+  if (state.complete) redirect("/dashboard");
+
   const overview = await getWorkspaceOverview(session);
   const activeOrganizationId = overview.activeOrganizationId;
   const hasScope = activeOrganizationId !== null;

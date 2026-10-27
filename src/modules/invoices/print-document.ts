@@ -12,6 +12,8 @@
 
 import { AppError } from "@/lib/errors";
 import { db } from "@/server/db";
+import { invoiceProfiles, invoices, projectReferences } from "@/db/schema";
+import { eq } from "drizzle-orm";
 import { toCalendarInput } from "@/lib/date";
 import {
   parseSnapshot,
@@ -23,7 +25,8 @@ import {
   type SignerSnapshot,
   type TemplateSnapshot,
 } from "@/modules/invoices/snapshots";
-import type { InvoiceType, Prisma } from "@prisma/client";
+import type { InvoiceType } from "@/db/enums";
+// Change 6: dropped Prisma (role tiers removed)
 
 /**
  * Everything the print route needs to rebuild the DOCUMENT of an issued
@@ -58,7 +61,7 @@ export interface IssuedPrintSource {
   calculation: CalculationSnapshot;
   template: TemplateSnapshot;
   /** Raw InvoiceProfile.settings JSON — parsed by parseProfileSettings. */
-  settings: Prisma.JsonValue | null;
+  settings: Record<string, unknown> | null;
 }
 
 export interface PrintDocument extends IssuedPrintSource {
@@ -75,39 +78,28 @@ export interface PrintDocument extends IssuedPrintSource {
  * draft/unknown id — the print route only ever renders finished documents.
  */
 export async function getPrintDocument(invoiceId: string): Promise<PrintDocument> {
-  const invoice = await db.invoice.findUnique({
-    where: { id: invoiceId },
-    select: {
-      id: true,
-      organizationId: true,
-      status: true,
-      number: true,
-      invoiceType: true,
-      invoiceDate: true,
-      dueDate: true,
-      referenceType: true,
-      referenceNumber: true,
-      referenceDate: true,
-      paymentTerms: true,
-      currency: true,
-      billingMode: true,
-      billingPercent: true,
-      termName: true,
-      termNumber: true,
-      customLabel: true,
-      notes: true,
-      footerText: true,
-      issuerSnapshot: true,
-      customerSnapshot: true,
-      contactSnapshot: true,
-      bankSnapshot: true,
-      signerSnapshot: true,
-      calculationSnapshot: true,
-      templateSnapshot: true,
-      projectReference: { select: { title: true } },
-      profile: { select: { settings: true } },
-    },
-  });
+  const rows = await db
+    .select({
+      invoice: invoices,
+      projectTitle: projectReferences.title,
+      profileSettings: invoiceProfiles.settings,
+    })
+    .from(invoices)
+    .leftJoin(
+      projectReferences,
+      eq(projectReferences.id, invoices.projectReferenceId),
+    )
+    .leftJoin(invoiceProfiles, eq(invoiceProfiles.id, invoices.profileId))
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  const first = rows[0];
+  const invoice = first
+    ? {
+        ...first.invoice,
+        projectReference: first.projectTitle === null ? null : { title: first.projectTitle },
+        profile: first.invoice ? { settings: first.profileSettings } : null,
+      }
+    : null;
 
   if (!invoice || !invoice.number || invoice.status === "DRAFT") {
     // Same answer for "does not exist" and "not printable" — never leak why.
@@ -157,7 +149,7 @@ export async function getPrintDocument(invoiceId: string): Promise<PrintDocument
     signer,
     calculation,
     template,
-    settings: invoice.profile.settings,
+    settings: (invoice.profile?.settings ?? null) as Record<string, unknown> | null,
     title: invoice.number,
     author: issuer.name,
   };

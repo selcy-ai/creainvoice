@@ -15,7 +15,7 @@
 // OLD key defaults to BANK_ACCOUNT_ENCRYPTION_KEY (the app's current env).
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { PrismaClient } from "@prisma/client";
+import { Pool } from "pg"; // Change 6: Prisma removed — plain pg here.
 
 function deriveKey(secret) {
   return createHash("sha256").update(secret, "utf8").digest();
@@ -70,14 +70,19 @@ if (!process.env.DATABASE_URL) {
 const oldKey = deriveKey(oldSecret);
 const newKey = deriveKey(newSecret);
 
-const prisma = new PrismaClient();
+const prisma = new Pool({ connectionString: process.env.DATABASE_URL });
 let exitCode = 0;
 
 try {
-  const rows = await prisma.bankAccount.findMany({
-    select: { id: true, accountNumberEncrypted: true, accountNumberLast4: true },
-    orderBy: { createdAt: "asc" },
-  });
+  const found = await prisma.query(
+    `SELECT id, account_number_encrypted, account_number_last4
+     FROM bank_account ORDER BY created_at ASC`,
+  );
+  const rows = found.rows.map((row) => ({
+    id: row.id,
+    accountNumberEncrypted: row.account_number_encrypted,
+    accountNumberLast4: row.account_number_last4,
+  }));
   console.log(`Found ${rows.length} bank account row(s).`);
 
   let rotated = 0;
@@ -116,10 +121,10 @@ try {
       throw new Error("aborted");
     }
 
-    await prisma.bankAccount.update({
-      where: { id: row.id },
-      data: { accountNumberEncrypted: next },
-    });
+    await prisma.query(
+      `UPDATE bank_account SET account_number_encrypted = $1 WHERE id = $2`,
+      [next, row.id],
+    );
     rotated += 1;
   }
 
@@ -134,7 +139,7 @@ try {
   }
   exitCode = 1;
 } finally {
-  await prisma.$disconnect();
+  await prisma.end();
 }
 
 process.exit(exitCode);

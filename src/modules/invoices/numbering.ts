@@ -17,11 +17,13 @@
 // which may legitimately repeat across concurrent drafts: the uniqueness
 // invariant lives on the ISSUED number.
 
-import { randomUUID } from "node:crypto";
-import { db } from "@/server/db";
+import { db, type Database } from "@/server/db";
+import { invoiceSequences } from "@/db/schema";
+import { and, eq, sql } from "drizzle-orm";
 import { previewNumber, validateNumberPattern } from "@/modules/profiles/number-pattern";
 import { renderNumberPreview, sequenceKeyFor } from "@/modules/invoices/numbering-core";
-import type { Prisma, SequenceResetPolicy } from "@prisma/client";
+import type { SequenceResetPolicy } from "@/db/enums";
+import { createId } from "@/db/id";
 
 // Pure helpers live in numbering-core (client-safe so the editor preview can
 // render the same preview number); re-exported here for the server call sites
@@ -40,17 +42,25 @@ export async function buildNumberPreview(
     sequenceResetPolicy: SequenceResetPolicy;
   },
   invoiceDate: Date,
-  tx?: Prisma.TransactionClient,
+  tx?: Pick<Database, "select" | "insert" | "update" | "execute">,
 ): Promise<string | null> {
   const client = tx ?? db;
   const key = sequenceKeyFor(profile.sequenceResetPolicy, invoiceDate);
-  const existing = await client.invoiceSequence.findUnique({
-    where: {
-      invoiceProfileId_sequenceKey: { invoiceProfileId: profile.id, sequenceKey: key },
-    },
-    select: { currentValue: true },
-  });
-  return renderNumberPreview(profile, invoiceDate, (existing?.currentValue ?? 0) + 1);
+  const existingRows = await client
+    .select({ currentValue: invoiceSequences.currentValue })
+    .from(invoiceSequences)
+    .where(
+      and(
+        eq(invoiceSequences.invoiceProfileId, profile.id),
+        eq(invoiceSequences.sequenceKey, key),
+      ),
+    )
+    .limit(1);
+  return renderNumberPreview(
+    profile,
+    invoiceDate,
+    (existingRows[0]?.currentValue ?? 0) + 1,
+  );
 }
 
 /**
@@ -62,32 +72,45 @@ export async function buildNumberPreview(
  * Postgres cannot lock a row it has just inserted in the same statement.
  */
 export async function nextSequence(
-  tx: Prisma.TransactionClient,
+  tx: Pick<Database, "select" | "insert" | "update" | "execute">,
   profile: { id: string; sequenceResetPolicy: SequenceResetPolicy },
   invoiceDate: Date,
 ): Promise<number> {
   const key = sequenceKeyFor(profile.sequenceResetPolicy, invoiceDate);
   // The primary key must be supplied by hand: @default(cuid()) is a
   // CLIENT-side default, so a raw INSERT would otherwise hit NOT NULL (23502).
-  // randomUUID() keeps the same contract the data model asks for — a
+  // createId() keeps the same contract the data model asks for — a
   // non-sequential, unguessable id (node:crypto, never a counter).
-  await tx.$executeRaw`
-    INSERT INTO "InvoiceSequence" ("id", "invoiceProfileId", "sequenceKey", "currentValue", "updatedAt")
-    VALUES (${randomUUID()}, ${profile.id}, ${key}, 0, now())
-    ON CONFLICT ("invoiceProfileId", "sequenceKey") DO NOTHING
-  `;
+  // Drizzle cannot express INSERT ... ON CONFLICT DO NOTHING with a raw
+  // default id, so the sequence row is seeded with the app's id generator.
+  // Column names are the DB's snake_case (src/db/schema.ts maps camelCase
+  // properties onto snake_case columns — raw SQL speaks the DB's names).
+  await tx.execute(sql`
+    INSERT INTO "invoice_sequence" ("id", "invoice_profile_id", "sequence_key", "current_value", "updated_at")
+    VALUES (${createId()}, ${profile.id}, ${key}, 0, now())
+    ON CONFLICT ("invoice_profile_id", "sequence_key") DO NOTHING
+  `);
   // Lock the bucket row: a concurrent allocator blocks here until we commit.
-  await tx.$queryRaw`
-    SELECT id FROM "InvoiceSequence"
-    WHERE "invoiceProfileId" = ${profile.id} AND "sequenceKey" = ${key}
+  await tx.execute(sql`
+    SELECT id FROM "invoice_sequence"
+    WHERE "invoice_profile_id" = ${profile.id} AND "sequence_key" = ${key}
     FOR UPDATE
-  `;
-  const updated = await tx.invoiceSequence.update({
-    where: { invoiceProfileId_sequenceKey: { invoiceProfileId: profile.id, sequenceKey: key } },
-    data: { currentValue: { increment: 1 } },
-    select: { currentValue: true },
-  });
-  return updated.currentValue;
+  `);
+  const updated = await tx
+    .update(invoiceSequences)
+    .set({ currentValue: sql`${invoiceSequences.currentValue} + 1` })
+    .where(
+      and(
+        eq(invoiceSequences.invoiceProfileId, profile.id),
+        eq(invoiceSequences.sequenceKey, key),
+      ),
+    )
+    .returning({ currentValue: invoiceSequences.currentValue });
+  const next = updated[0]?.currentValue;
+  if (next === undefined) {
+    throw new Error("Alokasi nomor urut gagal — bucket sequence tidak ditemukan.");
+  }
+  return next;
 }
 
 /**
@@ -96,7 +119,7 @@ export async function nextSequence(
  * width, so the allocated int goes through as-is.
  */
 export async function allocateFinalNumber(
-  tx: Prisma.TransactionClient,
+  tx: Pick<Database, "select" | "insert" | "update" | "execute">,
   profile: {
     id: string;
     code: string;

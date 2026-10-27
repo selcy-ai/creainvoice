@@ -43,7 +43,7 @@ Bangun modul master data: customer + PIC (contact) dan ProjectReference (PO/SPK/
 - [ ] CRUD PIC per customer; PIC primary bisa di-set; delete customer soft-delete contact juga.
 - [ ] CRUD ProjectReference dengan semua referenceType; upload PO file diterima (PDF/image), >2MB ditolak, MIME palsu ditolak.
 - [ ] List customer & project: server-side pagination + search berfungsi.
-- [ ] Search "Dharma" menemukan customer seed.
+- [ ] Search "Cipta" menemukan customer seed.
 - [ ] Permission: VIEWER tidak bisa create/update (403), STAFF bisa.
 - [ ] Org isolation: user org A tidak bisa lihat customer org B (404 via IDOR guard).
 - [ ] NPWP tidak muncul di log atau audit metadata.

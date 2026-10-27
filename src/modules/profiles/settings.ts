@@ -6,7 +6,7 @@
 // reachable from 'use client' components — importing the service there puts
 // node builtins into the browser bundle (Next build fails).
 
-import type { Prisma } from "@prisma/client";
+// Change 6: dropped Prisma (role tiers removed)
 
 /**
  * Document-affecting profile settings (data-model: "logo size/posisi,
@@ -24,7 +24,7 @@ export interface InvoiceProfileSettings {
 }
 
 export function parseProfileSettings(
-  value: Prisma.JsonValue | null | undefined,
+  value: unknown,
 ): InvoiceProfileSettings {
   const defaults: InvoiceProfileSettings = { hideZeroRows: true, hideStampLabel: false };
   if (value === null || value === undefined) return defaults;

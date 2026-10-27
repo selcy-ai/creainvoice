@@ -21,8 +21,19 @@ import Decimal from "decimal.js";
 import { AppError } from "@/lib/errors";
 import { logger } from "@/server/logger";
 import { db } from "@/server/db";
+import {
+  bankAccounts,
+  customerContacts,
+  customers,
+  invoiceItems,
+  invoiceProfiles,
+  invoices,
+  projectReferences,
+  signers,
+} from "@/db/schema";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { log } from "@/modules/audit/service";
-import { assertCan, requireOrgScope } from "@/modules/permissions/service";
+import { assertCan, requireOrgScope } from "@/modules/workspace/permissions";
 import { allocateFinalNumber, buildNumberPreview } from "@/modules/invoices/numbering";
 import { validateNumberPattern } from "@/modules/profiles/number-pattern";
 import { sumBilledForProject } from "@/modules/invoices/billed";
@@ -40,7 +51,7 @@ import type {
   TemplateSnapshot,
 } from "@/modules/invoices/snapshots";
 import { toJsonInput } from "@/modules/invoices/snapshots";
-import { Prisma } from "@prisma/client";
+// Change 6: dropped Prisma (role tiers removed)
 
 // ─── Retry on sequence / serialization conflict ───────────────────────────
 
@@ -120,20 +131,66 @@ const issueInclude = {
   bankAccount: true,
   signer: true,
   items: { orderBy: { position: "asc" as const } },
-} satisfies Prisma.InvoiceInclude;
+};
 
-export type IssueInvoiceRow = Prisma.InvoiceGetPayload<{ include: typeof issueInclude }>;
+export interface IssueInvoiceRow {
+  invoice: typeof invoices.$inferSelect;
+  profile: typeof invoiceProfiles.$inferSelect | null;
+  customer: typeof customers.$inferSelect | null;
+  customerContact: typeof customerContacts.$inferSelect | null;
+  projectReference: typeof projectReferences.$inferSelect | null;
+  bankAccount: typeof bankAccounts.$inferSelect | null;
+  signer: typeof signers.$inferSelect | null;
+  items: Array<typeof invoiceItems.$inferSelect>;
+}
 
 async function loadDraftForIssue(
   invoiceId: string,
   ctx: InvoiceServiceContext,
 ): Promise<IssueInvoiceRow> {
-  const invoice = await db.invoice.findUnique({ where: { id: invoiceId }, include: issueInclude });
-  if (!invoice || invoice.organizationId !== ctx.scope.organizationId) {
+  const invoiceRows = await db
+    .select({
+      invoice: invoices,
+      profile: invoiceProfiles,
+      customer: customers,
+      customerContact: customerContacts,
+      projectReference: projectReferences,
+      bankAccount: bankAccounts,
+      signer: signers,
+    })
+    .from(invoices)
+    .leftJoin(invoiceProfiles, eq(invoiceProfiles.id, invoices.profileId))
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .leftJoin(customerContacts, eq(customerContacts.id, invoices.customerContactId))
+    .leftJoin(projectReferences, eq(projectReferences.id, invoices.projectReferenceId))
+    .leftJoin(bankAccounts, eq(bankAccounts.id, invoices.bankAccountId))
+    .leftJoin(signers, eq(signers.id, invoices.signerId))
+    .where(eq(invoices.id, invoiceId))
+    .limit(1);
+  const first = invoiceRows[0];
+  if (!first) {
+    throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
+  }
+  const items = await db
+    .select()
+    .from(invoiceItems)
+    .where(eq(invoiceItems.invoiceId, invoiceId))
+    .orderBy(asc(invoiceItems.position));
+  const invoice: IssueInvoiceRow = {
+    invoice: first.invoice,
+    profile: first.profile,
+    customer: first.customer,
+    customerContact: first.customerContact,
+    projectReference: first.projectReference,
+    bankAccount: first.bankAccount,
+    signer: first.signer,
+    items,
+  };
+  if (!invoice.invoice || invoice.invoice.organizationId !== ctx.scope.organizationId) {
     // IDOR guard: another org's invoice answers 404, never "exists elsewhere".
     throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
   }
-  if (invoice.status !== "DRAFT") {
+  if (invoice.invoice.status !== "DRAFT") {
     throw new AppError("LOCKED", "Invoice yang sudah terbit tidak dapat diterbitkan ulang.");
   }
   return invoice;
@@ -144,10 +201,10 @@ async function loadDraftForIssue(
  * with an Indonesian message the user can act on — nothing is issued half-ready.
  */
 function assertIssueComplete(invoice: IssueInvoiceRow): void {
-  if (invoice.profile.organizationId !== invoice.organizationId) {
+  if (!invoice.profile || invoice.profile.organizationId !== invoice.invoice.organizationId) {
     throw new AppError("VALIDATION_ERROR", "Profil invoice tidak valid.");
   }
-  if (invoice.customer.organizationId !== invoice.organizationId) {
+  if (!invoice.customer || invoice.customer.organizationId !== invoice.invoice.organizationId) {
     throw new AppError("VALIDATION_ERROR", "Customer tidak valid.");
   }
   if (invoice.items.length === 0) {
@@ -183,6 +240,9 @@ export function buildSnapshots(
 ): IssueSnapshots {
   const profile = invoice.profile;
   const customer = invoice.customer;
+  if (!profile || !customer) {
+    throw new AppError("VALIDATION_ERROR", "Profil atau customer tidak valid.");
+  }
 
   const issuer: IssuerSnapshot = {
     profileId: profile.id,
@@ -262,18 +322,18 @@ export function buildSnapshots(
     : null;
 
   const calculation: CalculationSnapshot = {
-    invoiceType: invoice.invoiceType,
-    billingMode: invoice.billingMode,
-    billingPercent: invoice.billingPercent?.toString() ?? null,
-    billingAmount: invoice.billingAmount?.toString() ?? null,
+    invoiceType: invoice.invoice.invoiceType,
+    billingMode: invoice.invoice.billingMode,
+    billingPercent: invoice.invoice.billingPercent?.toString() ?? null,
+    billingAmount: invoice.invoice.billingAmount?.toString() ?? null,
     workValue: calc.workValue,
     itemsSubtotal: calc.itemsSubtotal,
     previouslyBilled,
     billingBase: calc.billingBase,
     discountAmount: calc.discountAmount,
     additionalAmount: calc.additionalAmount,
-    taxMode: invoice.taxMode,
-    taxPercent: invoice.taxPercent?.toString() ?? null,
+    taxMode: invoice.invoice.taxMode,
+    taxPercent: invoice.invoice.taxPercent?.toString() ?? null,
     taxAmount: calc.taxAmount,
     roundingAmount: calc.roundingAmount,
     grandTotal: calc.grandTotal,
@@ -294,7 +354,7 @@ export function buildSnapshots(
   const template: TemplateSnapshot = {
     templateKey: profile.templateKey,
     primaryColor: profile.primaryColor,
-    stampMode: invoice.stampMode,
+    stampMode: invoice.invoice.stampMode,
     numberPattern: profile.numberPattern,
   };
 
@@ -330,6 +390,9 @@ export async function issueInvoice(
 
   // Pattern validity is checked BEFORE the transaction so a broken profile
   // pattern never burns a sequence value or half-issues an invoice.
+  if (!invoice.profile) {
+    throw new AppError("VALIDATION_ERROR", "Profil invoice tidak valid.");
+  }
   const pattern = validateNumberPattern(invoice.profile.numberPattern);
   if (!pattern.ok) {
     throw new AppError("VALIDATION_ERROR", `Pola nomor invoice tidak valid: ${pattern.message}`);
@@ -339,10 +402,13 @@ export async function issueInvoice(
   // drafts/cancelled/revised invoices of this project do not count).
   const previouslyBilled = await sumBilledForProject(db, {
     organizationId: ctx.scope.organizationId,
-    projectReferenceId: invoice.projectReferenceId,
-    excludeInvoiceId: invoice.id,
+    projectReferenceId: invoice.invoice.projectReferenceId,
+    excludeInvoiceId: invoice.invoice.id,
   });
-  const calc = calcFromRows(invoice, previouslyBilled);
+  const calc = calcFromRows(
+    { ...invoice.invoice, ...invoice } as unknown as Parameters<typeof calcFromRows>[0],
+    previouslyBilled,
+  );
   if (new Decimal(calc.billingBase).lte(0)) {
     throw new AppError(
       "VALIDATION_ERROR",
@@ -360,7 +426,7 @@ export async function issueInvoice(
   const issuedAt = new Date();
 
   return withIssueRetry(async () =>
-    db.$transaction(
+    db.transaction(
       async (tx) => {
         // Deterministic serialization: take an EXCLUSIVE lock on the sequence
         // table as the FIRST statement, BEFORE the transaction reads anything.
@@ -375,15 +441,21 @@ export async function issueInvoice(
         // cross-instance races; the retry budget stays for residual conflicts
         // (P2002/deadlock). Reads (draft previews) take ACCESS SHARE and are
         // not blocked by this lock.
-        await tx.$executeRaw`LOCK TABLE "InvoiceSequence" IN EXCLUSIVE MODE`;
+        await tx.execute(sql`LOCK TABLE "invoice_sequence" IN EXCLUSIVE MODE`);
 
         // Guard inside the transaction: a concurrent second attempt sees a
         // non-DRAFT row and aborts — the invoice can only be issued once
         // (total rollback, nothing half-written).
-        const current = await tx.invoice.findUnique({
-          where: { id: invoiceId },
-          select: { id: true, organizationId: true, status: true },
-        });
+        const currentRows = await tx
+          .select({
+            id: invoices.id,
+            organizationId: invoices.organizationId,
+            status: invoices.status,
+          })
+          .from(invoices)
+          .where(eq(invoices.id, invoiceId))
+          .limit(1);
+        const current = currentRows[0];
         if (!current || current.organizationId !== ctx.scope.organizationId) {
           throw new AppError("NOT_FOUND", "Invoice tidak ditemukan.");
         }
@@ -394,12 +466,20 @@ export async function issueInvoice(
         // Row-locked allocation (SELECT ... FOR UPDATE on the sequence
         // bucket) — concurrent issues in the same profile/period serialize
         // here and can never share a number.
-        const number = await allocateFinalNumber(tx, invoice.profile, invoice.invoiceDate);
+        const number = await allocateFinalNumber(
+          tx,
+          invoice.profile ?? { id: "", code: "", numberPattern: "", sequenceResetPolicy: "YEARLY" },
+          invoice.invoice.invoiceDate,
+        );
+        if (!invoice.profile) {
+          throw new AppError("VALIDATION_ERROR", "Profil invoice tidak valid.");
+        }
 
-        // Only a still-DRAFT row flips to ISSUED (updateMany + count).
-        const updated = await tx.invoice.updateMany({
-          where: { id: invoiceId, status: "DRAFT" },
-          data: {
+        // Only a still-DRAFT row flips to ISSUED: guarded update + affected
+        // row count, so a race loses to this transaction, not to the other.
+        const issuedRows = await tx
+          .update(invoices)
+          .set({
             status: "ISSUED",
             number,
             issuedAt,
@@ -420,23 +500,31 @@ export async function issueInvoice(
             remainingAfter: calc.grandTotal,
             issuerSnapshot: toJsonInput(snapshots.issuer),
             customerSnapshot: toJsonInput(snapshots.customer),
-            // JsonNull = "there was genuinely no PIC/bank/signer at issue" —
-            // the issued document must not pick up one added later.
-            contactSnapshot: snapshots.contact ? toJsonInput(snapshots.contact) : Prisma.JsonNull,
-            bankSnapshot: snapshots.bank ? toJsonInput(snapshots.bank) : Prisma.JsonNull,
-            signerSnapshot: snapshots.signer ? toJsonInput(snapshots.signer) : Prisma.JsonNull,
+            // null = "there was genuinely no PIC/bank/signer at issue" — the
+            // issued document must not pick up one added later.
+            contactSnapshot: snapshots.contact ? toJsonInput(snapshots.contact) : null,
+            bankSnapshot: snapshots.bank ? toJsonInput(snapshots.bank) : null,
+            signerSnapshot: snapshots.signer ? toJsonInput(snapshots.signer) : null,
             calculationSnapshot: toJsonInput(snapshots.calculation),
             templateSnapshot: toJsonInput(snapshots.template),
-          },
-        });
-        if (updated.count !== 1) {
+          })
+          .where(and(eq(invoices.id, invoiceId), eq(invoices.status, "DRAFT")))
+          .returning({ id: invoices.id });
+        if (issuedRows.length !== 1) {
           throw new AppError("LOCKED", "Invoice sudah terbit.");
         }
 
         // The draft preview number is obsolete once the final number exists —
         // keep both columns consistent for every later read.
-        const numberPreview = await buildNumberPreview(invoice.profile, invoice.invoiceDate, tx);
-        await tx.invoice.update({ where: { id: invoiceId }, data: { numberPreview } });
+        const numberPreview = await buildNumberPreview(
+          invoice.profile,
+          invoice.invoice.invoiceDate,
+          tx,
+        );
+        await tx
+          .update(invoices)
+          .set({ numberPreview })
+          .where(eq(invoices.id, invoiceId));
 
         // Audit + PDF job in the SAME transaction (spec steps 7–8): either
         // everything commits, or nothing does.
@@ -449,7 +537,7 @@ export async function issueInvoice(
             entityId: invoiceId,
             metadata: {
               number,
-              invoiceType: invoice.invoiceType,
+              invoiceType: invoice.invoice.invoiceType,
               grandTotal: calc.grandTotal,
               itemCount: invoice.items.length,
             },
@@ -460,14 +548,6 @@ export async function issueInvoice(
         await enqueuePdfJob(invoiceId, ctx, tx);
 
         return { invoiceId, number, issuedAt: issuedAt.toISOString() };
-      },
-      {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        // 10 parallel issues serialize on the sequence row; give the wait
-        // room instead of the 2s/5s defaults (concurrency check in tests).
-        maxWait: 10_000,
-        timeout: 20_000,
-      },
-    ),
+    }),
   );
 }

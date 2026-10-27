@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import { INVOICE_STATUS_LABELS, InvoiceStatusBadge } from "@/components/invoice/invoice-status-badge";
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
 
 describe("INVOICE_STATUS_LABELS", () => {
   it("labels every status in Indonesian, including the payment statuses", () => {

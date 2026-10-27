@@ -14,7 +14,7 @@
 // UTC H-7. Every case below states both to remove the ambiguity.
 
 import { describe, expect, it } from "vitest";
-import type { InvoiceStatus } from "@prisma/client";
+import type { InvoiceStatus } from "@/db/enums";
 import { isOverdue, isPastDue, recomputeOverdue } from "@/modules/invoices/lifecycle-service";
 
 // Stored calendar days are UTC midnight of the business day.

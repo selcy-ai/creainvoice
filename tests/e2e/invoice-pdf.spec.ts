@@ -13,10 +13,11 @@
 // container must NOT hold the port, or the stale image would be tested).
 
 import "./setup-env";
+import { ctxFor } from "@/tests/helpers/context";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { db } from "@/server/db";
+import { db } from "@/tests/helpers/test-db";
 import { createProfile } from "@/modules/profiles/service";
 import { saveBankAccount } from "@/modules/bank-accounts/service";
 import { saveSigner } from "@/modules/signers/service";
@@ -24,7 +25,6 @@ import { createCustomer } from "@/modules/customers/service";
 import { createDraft } from "@/modules/invoices/service";
 import type { InvoiceDraftFormOutput } from "@/modules/invoices/schema";
 import { issueInvoice } from "@/modules/invoices/issue-service";
-import type { OrganizationRole } from "@prisma/client";
 import { addMembership, createOrganization, createUser, type TestUser } from "../factories";
 
 let user: TestUser;
@@ -34,15 +34,9 @@ let customerId: string;
 let invoiceId: string;
 let invoiceNumber: string;
 
+// Change 6: flat workspace — no role tier, ctxFor carries the full scope.
 function ctx() {
-  return {
-    scope: {
-      organizationId,
-      role: "OWNER" as OrganizationRole,
-      userId: user.id,
-    },
-    request: null,
-  };
+  return ctxFor(organizationId, user.id);
 }
 
 async function login(page: Page): Promise<void> {
@@ -74,13 +68,13 @@ test.describe("invoice PDF end-to-end (fitur 06)", () => {
     organizationId = org.id;
     await addMembership(user.id, org.id, "OWNER");
 
-    const profile = await createProfile(ctx(), { name: "Karya Nusantara", code: "SB" });
+    const profile = await createProfile(ctx(), { name: "CreaInvoice Studio", code: "SB" });
     profileId = profile.id;
 
     const customer = await createCustomer(
       {
-        companyName: "PT Dharma Polimetal Tbk",
-        legalName: "PT Dharma Polimetal Tbk",
+        companyName: "PT Cipta Karya Nusantara",
+        legalName: "PT Cipta Karya Nusantara",
         businessType: "Manufaktur",
         taxId: "01.2345.6789.000008",
         address: "Jl. Industri No. 7",
@@ -90,7 +84,7 @@ test.describe("invoice PDF end-to-end (fitur 06)", () => {
         country: "Indonesia",
         phone: "0215550177",
         whatsapp: "",
-        email: "ap@dharma.co.id",
+        email: "ap@ciptakarya.co.id",
         isActive: true,
       },
       ctx(),
@@ -101,13 +95,13 @@ test.describe("invoice PDF end-to-end (fitur 06)", () => {
       {
         bankName: "Bank Mandiri",
         accountNumber: "1234567890123456",
-        accountHolder: "PT Karya Nusantara",
+        accountHolder: "PT CreaInvoice Studio",
         branch: "KCP Sudirman",
       },
       ctx(),
     );
     const signer = await saveSigner(
-      { name: "Karya Nusantara", title: "Direktur", location: "Yogyakarta" },
+      { name: "CreaInvoice Studio", title: "Direktur", location: "Yogyakarta" },
       ctx(),
     );
 

@@ -126,7 +126,7 @@ export function emptyEditorValues(): EditorFormValues {
 /** Persisted draft → editor values (edit page + ?draft= rehydration). */
 export function editorValuesFromDraft(draft: InvoiceDraftView): EditorFormValues {
   return {
-    profileId: draft.profile.id,
+    profileId: draft.profile?.id ?? "",
     invoiceType: draft.invoiceType,
     customerId: draft.customer?.id ?? "",
     customerContactId: draft.customerContactId ?? "",

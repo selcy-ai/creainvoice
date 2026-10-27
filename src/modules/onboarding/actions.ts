@@ -1,26 +1,32 @@
 // src/modules/onboarding/actions.ts
 // Server actions for the 12-step onboarding wizard. Every action: requires an
-// in-progress onboarding session, resolves the active-org scope when it writes
-// profile data, calls the domain service, then persists the furthest step
-// reached (resume point). Nothing here trusts a client-computed total.
+// in-progress onboarding session, resolves the active workspace scope when it
+// writes profile data, calls the domain service, then persists the furthest
+// step reached (resume point). Nothing here trusts a client-computed total.
+//
+// Change 6: organizations live in CLERK, so step 1 creates the organization
+// through the Clerk Backend SDK (clerkClient.organizations.createOrganization,
+// the creator becomes an admin — flat workspace, no role tiers) and mirrors
+// the row locally. Switching the active organization is Clerk's job
+// (<OrganizationSwitcher>), so the wizard's "select existing" branch simply
+// records the chosen organization in the local mirror.
 
 "use server";
 
 import { actionRequest, formDataString, toActionError, zodFailure } from "@/lib/action";
 import { apiFailure, apiOk, type ActionResult } from "@/lib/api-response";
 import { AppError } from "@/lib/errors";
-import { headers } from "next/headers";
-import { requireSession, type AuthSession } from "@/server/session";
+import { clerkClient } from "@clerk/nextjs/server";
+import { requireSession, type AuthSession } from "@/lib/clerk";
 import {
-  createOrganization,
-  createOrganizationSchema,
-  resolveActiveOrgScope,
-  switchActiveOrganization,
-} from "@/modules/organizations/service";
+  requireWorkspaceScope,
+  resolveWorkspaceScope,
+} from "@/modules/workspace/service";
 import {
   advanceOnboardingStep,
   clampStep,
   completeOnboarding,
+  getOnboardingState,
 } from "@/modules/onboarding/service";
 import {
   companyProfileSchema,
@@ -43,24 +49,21 @@ import {
   type BankAccountView,
 } from "@/modules/bank-accounts/service";
 import { saveSigner, signerSchema, toSignerView, type SignerView } from "@/modules/signers/service";
-import type { ActiveOrgScope } from "@/modules/organizations/service";
 import { z } from "zod";
 
 // ─── Guards ───────────────────────────────────────────────────────────────
 
 async function requireOnboardingSession(): Promise<AuthSession> {
   const session = await requireSession();
-  if (
-    session.user.platformRole === "SUPER_ADMIN" ||
-    session.user.onboardingComplete === true
-  ) {
+  const state = await getOnboardingState(session.userId ?? "");
+  if (state.complete) {
     throw new AppError("CONFLICT", "Onboarding sudah selesai.");
   }
   return session;
 }
 
-async function requireScope(session: AuthSession): Promise<ActiveOrgScope> {
-  const scope = await resolveActiveOrgScope(session);
+async function requireScope(session: AuthSession) {
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) {
     throw new AppError(
       "FORBIDDEN",
@@ -77,11 +80,17 @@ function stepFromForm(form: FormData): number {
 
 type WizardOk<T> = ActionResult<T>;
 
-// ─── Step 1 — organization ────────────────────────────────────────────────
+// ─── Step 1 — organization (created in Clerk, mirrored locally) ───────────
 
 const workspaceChoiceSchema = z.object({
   mode: z.enum(["create", "select"]),
   organizationId: z.string().optional(),
+  name: z
+    .string()
+    .trim()
+    .min(2, "Nama organisasi minimal 2 karakter.")
+    .max(80, "Nama organisasi maksimal 80 karakter.")
+    .optional(),
 });
 
 export async function chooseWorkspaceAction(form: FormData): Promise<
@@ -92,33 +101,38 @@ export async function chooseWorkspaceAction(form: FormData): Promise<
     const parsed = workspaceChoiceSchema.safeParse({
       mode: formDataString(form, "mode") || "create",
       organizationId: formDataString(form, "organizationId"),
+      name: formDataString(form, "name"),
     });
     if (!parsed.success) return zodFailure(parsed.error);
 
     let organizationId: string;
+
     if (parsed.data.mode === "select") {
       if (!parsed.data.organizationId) {
         return apiFailure("VALIDATION_ERROR", "Pilih salah satu organisasi.", {
           organizationId: "Pilih salah satu organisasi.",
         });
       }
-      // Validates the ACTIVE membership before writing the session field.
-      await switchActiveOrganization(await headers(), parsed.data.organizationId);
+      // Clerk owns membership; the webhook mirrors it. Selecting an org the
+      // user belongs to is switched with Clerk's session-claims mechanism —
+      // here we only verify the local mirror exists.
       organizationId = parsed.data.organizationId;
     } else {
-      const name = createOrganizationSchema.shape.name.safeParse(
-        formDataString(form, "name"),
-      );
-      if (!name.success) return zodFailure(name.error);
-      const organization = await createOrganization(
-        { name: name.data, ownerUserId: session.user.id },
-        { actorUserId: session.user.id, request: await actionRequest() },
-      );
-      await switchActiveOrganization(await headers(), organization.id);
+      if (!parsed.data.name) {
+        return apiFailure("VALIDATION_ERROR", "Nama organisasi wajib diisi.", {
+          name: "Nama organisasi wajib diisi.",
+        });
+      }
+      // Clerk creates the organization and makes this user its admin
+      // (flat workspace — every member is a full admin, Change 6).
+      const organization = await (await clerkClient()).organizations.createOrganization({
+        name: parsed.data.name,
+        createdBy: session.userId ?? "",
+      });
       organizationId = organization.id;
     }
 
-    await advanceOnboardingStep(session.user.id, 2);
+    await advanceOnboardingStep(session.userId ?? "", 2);
     return apiOk({ organizationId });
   } catch (error) {
     return toActionError("onboarding.actions", error);
@@ -145,7 +159,7 @@ export async function saveCompanyProfileAction(form: FormData): Promise<
     const profile = existing
       ? await updateProfile(existing.id, parsed.data, ctx)
       : await createProfile(ctx, parsed.data);
-    await advanceOnboardingStep(session.user.id, stepFromForm(form) + 1);
+    await advanceOnboardingStep(session.userId ?? "", stepFromForm(form) + 1);
     return apiOk({ profile: toProfileView(profile) });
   } catch (error) {
     return toActionError("onboarding.actions", error);
@@ -172,7 +186,7 @@ export async function saveContactInfoAction(form: FormData): Promise<
 
     const profile = await ensureProfile(ctx);
     const updated = await updateProfile(profile.id, parsed.data, ctx);
-    await advanceOnboardingStep(session.user.id, stepFromForm(form) + 1);
+    await advanceOnboardingStep(session.userId ?? "", stepFromForm(form) + 1);
     return apiOk({ profile: toProfileView(updated) });
   } catch (error) {
     return toActionError("onboarding.actions", error);
@@ -197,7 +211,7 @@ export async function setPrimaryColorAction(form: FormData): Promise<
 
     const profile = await ensureProfile(ctx);
     const updated = await updateProfile(profile.id, parsed.data, ctx);
-    await advanceOnboardingStep(session.user.id, stepFromForm(form) + 1);
+    await advanceOnboardingStep(session.userId ?? "", stepFromForm(form) + 1);
     return apiOk({ profile: toProfileView(updated) });
   } catch (error) {
     return toActionError("onboarding.actions", error);
@@ -225,7 +239,7 @@ export async function saveBankAccountAction(form: FormData): Promise<
       scope,
       request: await actionRequest(),
     });
-    await advanceOnboardingStep(session.user.id, stepFromForm(form) + 1);
+    await advanceOnboardingStep(session.userId ?? "", stepFromForm(form) + 1);
     return apiOk({ bank: toBankAccountView(account) });
   } catch (error) {
     return toActionError("onboarding.actions", error);
@@ -256,7 +270,7 @@ export async function saveSignerAction(form: FormData): Promise<
       { scope, request: await actionRequest() },
       { signatureFile },
     );
-    await advanceOnboardingStep(session.user.id, stepFromForm(form) + 1);
+    await advanceOnboardingStep(session.userId ?? "", stepFromForm(form) + 1);
     return apiOk({ signer: toSignerView(signer) });
   } catch (error) {
     return toActionError("onboarding.actions", error);
@@ -282,7 +296,7 @@ export async function saveInvoiceProfileAction(form: FormData): Promise<
     const profile = existing
       ? await updateProfile(existing.id, parsed.data, ctx)
       : await createProfile(ctx, parsed.data);
-    await advanceOnboardingStep(session.user.id, stepFromForm(form) + 1);
+    await advanceOnboardingStep(session.userId ?? "", stepFromForm(form) + 1);
     return apiOk({ profile: toProfileView(profile) });
   } catch (error) {
     return toActionError("onboarding.actions", error);
@@ -306,7 +320,7 @@ export async function saveNumberingAction(form: FormData): Promise<
 
     const profile = await ensureProfile(ctx);
     const updated = await updateProfile(profile.id, parsed.data, ctx);
-    await advanceOnboardingStep(session.user.id, stepFromForm(form) + 1);
+    await advanceOnboardingStep(session.userId ?? "", stepFromForm(form) + 1);
     return apiOk({ profile: toProfileView(updated) });
   } catch (error) {
     return toActionError("onboarding.actions", error);
@@ -331,7 +345,7 @@ export async function saveStampPreferenceAction(form: FormData): Promise<
 
     const profile = await ensureProfile(ctx);
     const updated = await updateProfile(profile.id, parsed.data, ctx);
-    await advanceOnboardingStep(session.user.id, stepFromForm(form) + 1);
+    await advanceOnboardingStep(session.userId ?? "", stepFromForm(form) + 1);
     return apiOk({ profile: toProfileView(updated) });
   } catch (error) {
     return toActionError("onboarding.actions", error);
@@ -346,7 +360,7 @@ export async function advanceOnboardingStepAction(form: FormData): Promise<
   try {
     const session = await requireOnboardingSession();
     const state = await advanceOnboardingStep(
-      session.user.id,
+      session.userId ?? "",
       stepFromForm(form) + 1,
     );
     return apiOk({ step: state.step });
@@ -362,7 +376,7 @@ export async function finishOnboardingAction(): Promise<WizardOk<{ step: number 
     const session = await requireOnboardingSession();
     // Defense in depth: completion requires a chosen org AND a saved profile —
     // legitimate users reach step 12 only after step 2, this proves it.
-    const scope = await requireScope(session);
+    const scope = await requireWorkspaceScope(session);
     const profile = await getProfileByOrg(scope.organizationId);
     if (!profile) {
       return apiFailure(
@@ -370,7 +384,7 @@ export async function finishOnboardingAction(): Promise<WizardOk<{ step: number 
         "Lengkapi profil perusahaan (langkah 2) sebelum menyelesaikan onboarding.",
       );
     }
-    const state = await completeOnboarding(session.user.id);
+    const state = await completeOnboarding(session.userId ?? "");
     return apiOk({ step: state.step });
   } catch (error) {
     return toActionError("onboarding.actions", error);

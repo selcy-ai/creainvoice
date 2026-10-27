@@ -1,37 +1,52 @@
-// tests/factories.ts — Prisma-backed factories for integration tests.
-// All rows go through the real schema; passwords use the same hasher Better
-// Auth verifies against. Call resetDatabase() in beforeAll per test file.
+// tests/factories.ts — Drizzle-backed factories for integration tests (Change 6).
+//
+// All rows go through the real Drizzle schema against the Neon test database.
+// Call resetDatabase() in beforeAll per test file. Users mirror the Clerk
+// shape (id, email, name, username, onboarding flags) — there is no password
+// column anymore because Clerk owns credentials.
 
-import type {
-  MembershipStatus,
-  OrganizationRole,
-  PlatformRole,
-  UserStatus,
-} from "@prisma/client";
-import { hashPassword } from "better-auth/crypto";
-import { adminRoleForPlatform } from "@/lib/security";
-import { db } from "@/server/db";
+import { db } from "@/db/client";
+import {
+  auditLogs,
+  bankAccounts,
+  customerContacts,
+  customers,
+  invoiceItems,
+  invoicePdfs,
+  invoiceProfiles,
+  invoiceSequences,
+  invoices,
+  memberships,
+  organizations,
+  payments,
+  pdfJobs,
+  projectReferences,
+  signers,
+  uploadRecords,
+  users,
+} from "@/db/schema";
+import { createId } from "@/db/id";
+import { sql } from "drizzle-orm";
 
-/** Wipes all tables (children first — FK order, feature 02/03 models included). */
+/** Wipes all tables (children first — FK order). */
 export async function resetDatabase(): Promise<void> {
-  await db.auditLog.deleteMany();
-  await db.uploadRecord.deleteMany(); // Feature 09 — before Organization (FK)
-  await db.payment.deleteMany(); // Feature 07 — before Invoice (Restrict on user)
-  await db.invoiceItem.deleteMany(); // Feature 04 — cascade-safe order
-  await db.invoice.deleteMany();
-  await db.invoiceSequence.deleteMany();
-  await db.invoiceProfile.deleteMany(); // SetNull clears bank/signer FK links
-  await db.bankAccount.deleteMany();
-  await db.signer.deleteMany();
-  await db.projectReference.deleteMany(); // Customer → Restrict, delete first
-  await db.customerContact.deleteMany();
-  await db.customer.deleteMany();
-  await db.membership.deleteMany();
-  await db.session.deleteMany();
-  await db.verification.deleteMany();
-  await db.account.deleteMany();
-  await db.user.deleteMany();
-  await db.organization.deleteMany();
+  await db.delete(auditLogs);
+  await db.delete(uploadRecords);
+  await db.delete(payments);
+  await db.delete(invoiceItems);
+  await db.delete(invoicePdfs);
+  await db.delete(pdfJobs);
+  await db.delete(invoices);
+  await db.delete(invoiceSequences);
+  await db.delete(invoiceProfiles);
+  await db.delete(bankAccounts);
+  await db.delete(signers);
+  await db.delete(projectReferences);
+  await db.delete(customerContacts);
+  await db.delete(customers);
+  await db.delete(memberships);
+  await db.delete(users);
+  await db.delete(organizations);
 }
 
 let sequence = 0;
@@ -44,15 +59,12 @@ export interface TestUserOptions {
   username?: string;
   email?: string;
   name?: string;
+  /** Kept for call-site compatibility: Clerk owns the password now, so the
+   *  value is recorded on the returned object but never persisted. */
   password?: string;
-  platformRole?: PlatformRole;
-  status?: UserStatus;
-  mustChangePassword?: boolean;
-  /**
-   * Defaults to TRUE so feature-01 tests keep their "straight to dashboard"
-   * expectation; onboarding tests opt in with false (the DB default for
-   * admin-created users is false).
-   */
+  status?: "ACTIVE" | "SUSPENDED";
+  /** Defaults to TRUE so tests keep their "straight to dashboard"
+   *  expectation; onboarding tests opt in with false. */
   onboardingComplete?: boolean;
   onboardingStep?: number;
 }
@@ -69,48 +81,48 @@ export async function createUser(options: TestUserOptions = {}): Promise<TestUse
   const username = options.username ?? `user${uniqueSuffix()}`;
   const email = options.email ?? `${username}@test.local`;
   const password = options.password ?? `Pwd-${uniqueSuffix()}x1`;
-  const platformRole = options.platformRole ?? "USER";
-  const passwordHash = await hashPassword(password);
 
-  const user = await db.user.create({
-    data: {
-      username,
-      email,
-      name: options.name ?? username,
-      emailVerified: true,
-      platformRole,
-      role: adminRoleForPlatform(platformRole),
-      status: options.status ?? "ACTIVE",
-      mustChangePassword: options.mustChangePassword ?? false,
-      onboardingComplete: options.onboardingComplete ?? true,
-      onboardingStep: options.onboardingStep ?? 1,
-    },
-  });
-  await db.account.create({
-    data: {
-      accountId: user.id,
-      providerId: "credential",
-      userId: user.id,
-      password: passwordHash,
-    },
+  const id = createId();
+  await db.insert(users).values({
+    id,
+    username,
+    email,
+    name: options.name ?? username,
+    emailVerified: true,
+    status: options.status ?? "ACTIVE",
+    onboardingComplete: options.onboardingComplete ?? true,
+    onboardingStep: options.onboardingStep ?? 1,
   });
 
-  return { id: user.id, username, email, password, name: user.name ?? username };
+  return { id, username, email, password, name: options.name ?? username };
 }
 
-export async function createOrganization(name?: string): Promise<{ id: string; slug: string }> {
+export async function createOrganization(
+  name?: string,
+): Promise<{ id: string; slug: string }> {
   const slug = `org-${uniqueSuffix()}`;
-  const organization = await db.organization.create({
-    data: { name: name ?? `Organisasi Uji ${uniqueSuffix()}`, slug },
+  const id = createId();
+  await db.insert(organizations).values({
+    id,
+    name: name ?? `Organisasi Uji ${uniqueSuffix()}`,
+    slug,
   });
-  return { id: organization.id, slug: organization.slug };
+  return { id, slug };
 }
 
 export async function addMembership(
   userId: string,
   organizationId: string,
-  role: OrganizationRole,
-  status: MembershipStatus = "ACTIVE",
+  _role?: string,
+  status: "ACTIVE" | "INVITED" | "REMOVED" = "ACTIVE",
 ): Promise<{ id: string }> {
-  return db.membership.create({ data: { userId, organizationId, role, status } });
+  const id = createId();
+  await db.insert(memberships).values({ id, userId, organizationId, status });
+  return { id };
+}
+
+/** Raw SQL escape hatch for fixtures that need statements the factories do
+ *  not cover (kept small on purpose). */
+export async function raw(sqlText: string): Promise<void> {
+  await db.execute(sql.raw(sqlText));
 }

@@ -7,7 +7,7 @@
 // bucketing. numbering.ts (server) re-exports both so server call sites and
 // tests keep one import path.
 
-import type { SequenceResetPolicy } from "@prisma/client";
+import type { SequenceResetPolicy } from "@/db/enums";
 import { previewNumber, validateNumberPattern } from "@/modules/profiles/number-pattern";
 
 /** Placeholder sequenceKey for the NEVER policy — pattern date tokens still

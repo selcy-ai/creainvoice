@@ -13,7 +13,9 @@
 import { readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { db } from "@/server/db";
+import { organizations, uploadRecords } from "@/db/schema";
 import { env } from "@/server/env";
+import { eq, inArray, sql } from "drizzle-orm";
 import { logger } from "@/server/logger";
 import type {
   SaveInvoicePdfOptions,
@@ -58,17 +60,23 @@ export async function recordUpload(input: {
   kind: string;
 }): Promise<void> {
   try {
-    await db.uploadRecord.upsert({
-      where: { path: input.path },
-      update: { sizeBytes: BigInt(input.size), mimeType: input.mimeType, kind: input.kind },
-      create: {
+    await db
+      .insert(uploadRecords)
+      .values({
         organizationId: input.organizationId,
         path: input.path,
         sizeBytes: BigInt(input.size),
         mimeType: input.mimeType,
         kind: input.kind,
-      },
-    });
+      })
+      .onConflictDoUpdate({
+        target: uploadRecords.path,
+        set: {
+          sizeBytes: BigInt(input.size),
+          mimeType: input.mimeType,
+          kind: input.kind,
+        },
+      });
   } catch (error) {
     logger.error(
       { module: "storage", path: input.path, err: error instanceof Error ? error.message : String(error) },
@@ -81,7 +89,7 @@ export async function recordUpload(input: {
 export async function recordDelete(path: string): Promise<void> {
   if (!path.startsWith(UPLOAD_PREFIX)) return;
   try {
-    await db.uploadRecord.deleteMany({ where: { path } });
+    await db.delete(uploadRecords).where(eq(uploadRecords.path, path));
   } catch (error) {
     logger.error(
       { module: "storage", path, err: error instanceof Error ? error.message : String(error) },
@@ -147,15 +155,19 @@ export async function reconcileUploadRecords(): Promise<ReconcileResult> {
   // Only organizations that still exist: a file whose org was deleted (or a
   // leftover test fixture) has no parent row and would fail the FK — skipping
   // it keeps the reconcile idempotent instead of breaking the whole batch.
-  const known = new Set(
-    (await db.organization.findMany({ select: { id: true } })).map((row) => row.id),
-  );
+  const knownRows = await db.select({ id: organizations.id }).from(organizations);
+  const known = new Set(knownRows.map((row) => row.id));
   const insertable = rows.filter((row) => known.has(row.organizationId));
   if (insertable.length === 0) return { scanned, inserted: 0 };
 
   try {
-    const created = await db.uploadRecord.createMany({ data: insertable, skipDuplicates: true });
-    return { scanned, inserted: created.count };
+    // onConflictDoNothing emulates Prisma's createMany(skipDuplicates) over
+    // the unique `path` index.
+    const created = await db
+      .insert(uploadRecords)
+      .values(insertable)
+      .onConflictDoNothing({ target: uploadRecords.path });
+    return { scanned, inserted: created.rowCount ?? 0 };
   } catch (error) {
     logger.error(
       { module: "storage", err: error instanceof Error ? error.message : String(error) },

@@ -12,8 +12,8 @@
 
 import { withErrorHandler } from "@/lib/api-response";
 import { downloadOfficialPdf } from "@/modules/pdf/service";
-import { resolveActiveOrgScope } from "@/modules/organizations/service";
-import { getSession } from "@/server/session";
+import { resolveWorkspaceScope } from "@/modules/workspace/service";
+import { getSession } from "@/lib/clerk";
 
 export const dynamic = "force-dynamic";
 
@@ -21,14 +21,14 @@ export const GET = withErrorHandler(async (request: Request, ctx: { params: Prom
   const { id } = await ctx.params;
 
   const session = await getSession();
-  if (!session) {
+  if (!session?.userId) {
     return Response.json(
       { ok: false, error: { code: "UNAUTHORIZED", message: "Sesi Anda sudah berakhir. Silakan masuk kembali." } },
       { status: 401 },
     );
   }
 
-  const scope = await resolveActiveOrgScope(session);
+  const scope = await resolveWorkspaceScope(session);
   if (!scope) {
     // Authenticated but no active membership: same shape as an id that is
     // not ours — never confirm the resource exists.

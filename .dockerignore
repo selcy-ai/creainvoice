@@ -1,4 +1,4 @@
-# ─── invoice-me Docker ignore ─────────────────────────────────────────────────
+# ─── creainvoice Docker ignore ─────────────────────────────────────────────────
 
 # App node_modules are copied directly (npm registry not available inside build)
 # pdf-service/node_modules are also copied from host

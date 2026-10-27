@@ -10,9 +10,9 @@ import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 
 export const metadata: Metadata = {
-  title: "Kebijakan Privasi — invoice-me",
+  title: "Kebijakan Privasi — creainvoice",
   description:
-    "Kebijakan privasi invoice-me sesuai UU No. 27 Tahun 2022 tentang Pelindungan Data Pribadi.",
+    "Kebijakan privasi creainvoice sesuai UU No. 27 Tahun 2022 tentang Pelindungan Data Pribadi.",
   robots: { index: true, follow: true },
 };
 
@@ -35,14 +35,14 @@ export default function PrivacyPage() {
           </Link>
           <h1 className="text-3xl font-bold tracking-tight">Kebijakan Privasi</h1>
           <p className="text-sm text-muted-foreground">
-            Berlaku untuk penggunaan invoice-me. Terakhir diperbarui: 10 Oktober 2026.
+            Berlaku untuk penggunaan creainvoice. Terakhir diperbarui: 10 Oktober 2026.
           </p>
         </header>
 
         <Card>
           <CardContent className="flex flex-col gap-6 py-6">
-            <Section title="Tentang invoice-me">
-              invoice-me adalah platform invoice <strong>self-hosted</strong>. Aplikasi ini
+            <Section title="Tentang creainvoice">
+              creainvoice adalah platform invoice <strong>self-hosted</strong>. Aplikasi ini
               dijalankan di infrastruktur yang Anda (atau organisasi Anda) miliki dan kendalikan.
               Data Anda tidak dikirim ke server pihak ketiga untuk pemrosesan bisnis.
             </Section>
@@ -92,7 +92,7 @@ export default function PrivacyPage() {
 
             <Section title="Hak Anda sebagai pemilik data">
               Sesuai UU PDP, Anda berhak memperoleh informasi tentang pemrosesan data Anda,
-              memperbaui data yang keliru, dan meminta penghapusan data. Karena invoice-me
+              memperbaui data yang keliru, dan meminta penghapusan data. Karena creainvoice
               self-hosted, permintaan tersebut ditujukan kepada administrator instance Anda
               (super admin) yang mengelola data di server ini.
             </Section>
@@ -114,7 +114,7 @@ export default function PrivacyPage() {
 
             <Section title="Kontak">
               Untuk pertanyaan tentang privasi atau permintaan terkait data pribadi, hubungi
-              administrator instance invoice-me Anda.
+              administrator instance creainvoice Anda.
             </Section>
           </CardContent>
         </Card>

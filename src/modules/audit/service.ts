@@ -3,9 +3,11 @@
 // through log(). Metadata is sanitized before it touches the database so
 // passwords/tokens/PII can never land in the audit table.
 
-import { db } from "@/server/db";
+import { db, type Database } from "@/server/db";
 import { logger } from "@/server/logger";
-import type { AuditAction, Prisma } from "@prisma/client";
+import { auditLogs } from "@/db/schema";
+import type { AuditAction } from "@/db/enums";
+// Change 6: dropped Prisma (role tiers removed)
 
 /** Key matcher: any metadata key containing these fragments is redacted. */
 const SENSITIVE_KEY =
@@ -89,10 +91,13 @@ export interface AuditInput {
  * "Audit log INVOICE_ISSUED dalam transaksi yang sama"). An audited action
  * that cannot be recorded must not commit.
  */
-export async function log(input: AuditInput, tx?: Prisma.TransactionClient): Promise<void> {
+export async function log(
+  input: AuditInput,
+  tx?: Pick<Database, "insert">,
+): Promise<void> {
   const { ip, userAgent } = extractRequestMeta(input.request);
-  const metadata = sanitizeMetadata(input.metadata ?? {}) as Prisma.InputJsonValue;
-  const data: Prisma.AuditLogUncheckedCreateInput = {
+  const metadata = sanitizeMetadata(input.metadata ?? {}) as Record<string, unknown>;
+  const data = {
     actorUserId: input.actorUserId ?? null,
     organizationId: input.organizationId ?? null,
     action: input.action,
@@ -103,11 +108,11 @@ export async function log(input: AuditInput, tx?: Prisma.TransactionClient): Pro
     userAgent,
   };
   if (tx) {
-    await tx.auditLog.create({ data });
+    await tx.insert(auditLogs).values(data);
     return;
   }
   try {
-    await db.auditLog.create({ data });
+    await db.insert(auditLogs).values(data);
   } catch (error) {
     logger.error(
       { module: "audit", action: input.action, err: error instanceof Error ? error.message : String(error) },
