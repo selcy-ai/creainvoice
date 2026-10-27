@@ -57,9 +57,7 @@ export type AuditAction =
   | "INVOICE_SENT"
   | "INVOICE_CANCELLED"
   | "INVOICE_REVISED"
-  | "PAYMENT_RECORDED"
-  | "ADMIN_VIEWED_INVOICE"
-  | "PDF_JOB_RETRIED";
+  | "PAYMENT_RECORDED";
 
 /** Runtime list of every audit action (viewer completeness check, feature 11A). */
 export const AUDIT_ACTIONS: readonly AuditAction[] = [
@@ -83,6 +81,4 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   "INVOICE_CANCELLED",
   "INVOICE_REVISED",
   "PAYMENT_RECORDED",
-  "ADMIN_VIEWED_INVOICE",
-  "PDF_JOB_RETRIED",
 ];

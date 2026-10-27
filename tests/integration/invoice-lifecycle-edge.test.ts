@@ -242,8 +242,9 @@ describe("PARTIALLY_PAID lifecycle gates", () => {
     const copy = await getDraft(revision.draftId, ownerCtx());
     expect(copy.status).toBe("DRAFT");
     // The copy inherits the original's billing shape and recalculates against
-    // the fresh billed context — it does not keep stale numbers.
-    expect(copy.billingPercent).toBe("50");
+    // the fresh billed context — it does not keep stale numbers. (Change 6:
+    // Drizzle numeric returns "50.00"; Prisma's Decimal trimmed to "50".)
+    expect(copy.billingPercent).toBe("50.00");
     expect(copy.calc.grandTotal).toBe("2250000.00");
     expect(copy.calc.billingBase).toBe("2250000.00");
     // The original is excluded (it is about to become REVISED and counts for

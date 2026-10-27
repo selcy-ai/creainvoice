@@ -6,17 +6,51 @@
 //     reconcile is the safety net, so a throwing db is logged and swallowed.
 //   • The decorator — every upload/delete is recorded exactly once, and
 //     invoice PDFs are deliberately NOT recorded (InvoicePdf owns those).
+//
+// The db mock speaks the Drizzle builder chain record.ts builds since Change 6
+// (`db.insert(uploadRecords).values(..).onConflictDoUpdate(..)`,
+// `db.delete(uploadRecords).where(..)`) — the Prisma `upsert`/`deleteMany`
+// calls these used to assert went away with Prisma.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorageService, StoredContent, StoredObject } from "@/modules/storage/types";
 
-const dbMock = vi.hoisted(() => ({
-  uploadRecord: {
-    upsert: vi.fn(),
-    deleteMany: vi.fn(),
-    createMany: vi.fn(),
-  },
-}));
+/** Records a chained write so a test can assert what record.ts persisted. */
+interface RecordedWrite {
+  kind: "insert" | "delete";
+  values?: unknown;
+  conflictTarget?: unknown;
+  where?: unknown;
+}
+
+/** The Drizzle-shaped db mock. `recordWrites()` gives a test the recorded
+ *  chain calls so it can assert what record.ts persisted. */
+const dbMock = vi.hoisted(() => {
+  const writes: RecordedWrite[] = [];
+  const chain = {
+    values: vi.fn((values?: unknown) => {
+      writes.push({ kind: "insert", values });
+      return chain;
+    }),
+    onConflictDoUpdate: vi.fn((options?: { target?: unknown }) => {
+      writes.at(-1)!.conflictTarget = options?.target;
+      return chain;
+    }),
+    where: vi.fn((where?: unknown) => {
+      writes.push({ kind: "delete", where });
+      return chain;
+    }),
+  };
+  return {
+    insert: vi.fn(() => chain),
+    delete: vi.fn(() => chain),
+    __chain: chain,
+    __writes: writes,
+  };
+});
+
+/** The recorded chain writes of the current test (cleared in beforeEach). */
+const recordWrites = (): RecordedWrite[] => dbMock.__writes;
 
 const loggerMock = vi.hoisted(() => ({
   error: vi.fn(),
@@ -37,7 +71,13 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  recordWrites().length = 0;
 });
+
+/** The single recorded write of a kind (record.ts performs at most one). */
+function lastWrite(kind: RecordedWrite["kind"]): RecordedWrite | undefined {
+  return [...recordWrites()].reverse().find((write) => write.kind === kind);
+}
 
 describe("mimeFromExtension", () => {
   it("maps every extension the local backend can write", () => {
@@ -71,22 +111,25 @@ describe("recordUpload", () => {
       kind: "logos",
     });
 
-    expect(dbMock.uploadRecord.upsert).toHaveBeenCalledTimes(1);
-    expect(dbMock.uploadRecord.upsert).toHaveBeenCalledWith({
-      where: { path: "uploads/organizations/org_1/logos/a.png" },
-      update: { sizeBytes: BigInt(1024), mimeType: "image/png", kind: "logos" },
-      create: {
-        organizationId: "org_1",
-        path: "uploads/organizations/org_1/logos/a.png",
-        sizeBytes: BigInt(1024),
-        mimeType: "image/png",
-        kind: "logos",
-      },
+    const inserts = recordWrites().filter((write) => write.kind === "insert");
+    expect(inserts).toHaveLength(1);
+    expect(dbMock.insert).toHaveBeenCalledTimes(1);
+    // The row carries the org, path, size (BigInt) and kind exactly once.
+    expect(inserts[0]!.values).toMatchObject({
+      organizationId: "org_1",
+      path: "uploads/organizations/org_1/logos/a.png",
+      sizeBytes: BigInt(1024),
+      mimeType: "image/png",
+      kind: "logos",
     });
+    // The conflict target is the unique path — that is the upsert key.
+    expect(dbMock.__chain.onConflictDoUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("never throws when the write fails (best effort — reconcile heals it)", async () => {
-    dbMock.uploadRecord.upsert.mockRejectedValueOnce(new Error("db sedang sibuk"));
+    dbMock.__chain.values.mockImplementationOnce(() => {
+      throw new Error("db sedang sibuk");
+    });
     await expect(
       recordUpload({
         organizationId: "org_1",
@@ -106,19 +149,21 @@ describe("recordUpload", () => {
 describe("recordDelete", () => {
   it("removes the row for an upload path", async () => {
     await recordDelete("uploads/organizations/org_1/logos/a.png");
-    expect(dbMock.uploadRecord.deleteMany).toHaveBeenCalledTimes(1);
-    expect(dbMock.uploadRecord.deleteMany).toHaveBeenCalledWith({
-      where: { path: "uploads/organizations/org_1/logos/a.png" },
-    });
+    expect(dbMock.delete).toHaveBeenCalledTimes(1);
+    expect(dbMock.__chain.where).toHaveBeenCalledTimes(1);
+    expect(recordWrites().filter((write) => write.kind === "delete")).toHaveLength(1);
   });
 
   it("touches NOTHING for a non-upload path (invoice PDFs belong to InvoicePdf)", async () => {
     await recordDelete("invoices/organizations/org_1/2026/INV-SB-001.pdf");
-    expect(dbMock.uploadRecord.deleteMany).not.toHaveBeenCalled();
+    expect(dbMock.delete).not.toHaveBeenCalled();
+    expect(dbMock.__chain.where).not.toHaveBeenCalled();
   });
 
   it("swallows a failing delete instead of breaking the caller", async () => {
-    dbMock.uploadRecord.deleteMany.mockRejectedValueOnce(new Error("db mati"));
+    dbMock.__chain.where.mockImplementationOnce(() => {
+      throw new Error("db mati");
+    });
     await expect(recordDelete("uploads/organizations/org_1/logos/a.png")).resolves.toBeUndefined();
     expect(loggerMock.error).toHaveBeenCalledTimes(1);
   });
@@ -165,16 +210,22 @@ describe("RecordingStorageService", () => {
 
     expect(stored).toEqual(STORED);
     expect(inner.upload).toHaveBeenCalledTimes(1);
-    expect(dbMock.uploadRecord.upsert).toHaveBeenCalledTimes(1);
-    expect(dbMock.uploadRecord.upsert.mock.calls[0]?.[0]).toMatchObject({
-      create: { organizationId: "org_1", path: STORED.path, kind: "logos" },
+    // Exactly one bookkeeping write, scoped to the caller's organization.
+    const inserts = recordWrites().filter((write) => write.kind === "insert");
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]!.values).toMatchObject({
+      organizationId: "org_1",
+      path: STORED.path,
+      kind: "logos",
     });
   });
 
   it("keeps the bookkeeping off the hot path: a recorded write that fails still returns", async () => {
     const inner = fakeInner();
     const service = new RecordingStorageService(inner);
-    dbMock.uploadRecord.upsert.mockRejectedValueOnce(new Error("db mati"));
+    dbMock.__chain.values.mockImplementationOnce(() => {
+      throw new Error("db mati");
+    });
 
     await expect(
       service.upload(new File([new Uint8Array([1])], "x.png"), {
@@ -193,10 +244,10 @@ describe("RecordingStorageService", () => {
     await service.delete(STORED.path);
 
     expect(inner.delete).toHaveBeenCalledWith(STORED.path);
-    expect(dbMock.uploadRecord.deleteMany).toHaveBeenCalledWith({ where: { path: STORED.path } });
+    expect(dbMock.delete).toHaveBeenCalledTimes(1);
     // Inner delete runs before the row removal (file gone → row must go too).
     expect(vi.mocked(inner.delete).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(dbMock.uploadRecord.deleteMany).mock.invocationCallOrder[0]!,
+      dbMock.__chain.where.mock.invocationCallOrder[0]!,
     );
   });
 
@@ -208,7 +259,7 @@ describe("RecordingStorageService", () => {
     const service = new RecordingStorageService(inner);
 
     await expect(service.delete(STORED.path)).rejects.toThrow("file terkunci");
-    expect(dbMock.uploadRecord.deleteMany).not.toHaveBeenCalled();
+    expect(dbMock.delete).not.toHaveBeenCalled();
   });
 
   it("reads through without recording anything", async () => {
@@ -218,8 +269,8 @@ describe("RecordingStorageService", () => {
     const content = await service.read(STORED.path);
 
     expect(content.data).toHaveLength(4);
-    expect(dbMock.uploadRecord.upsert).not.toHaveBeenCalled();
-    expect(dbMock.uploadRecord.deleteMany).not.toHaveBeenCalled();
+    expect(dbMock.insert).not.toHaveBeenCalled();
+    expect(dbMock.delete).not.toHaveBeenCalled();
   });
 
   it("never records invoice PDFs — InvoicePdf is their source of truth", async () => {
@@ -234,7 +285,7 @@ describe("RecordingStorageService", () => {
 
     expect(stored).toEqual(PDF_STORED);
     expect(inner.saveInvoicePdf).toHaveBeenCalledTimes(1);
-    expect(dbMock.uploadRecord.upsert).not.toHaveBeenCalled();
-    expect(dbMock.uploadRecord.deleteMany).not.toHaveBeenCalled();
+    expect(dbMock.insert).not.toHaveBeenCalled();
+    expect(dbMock.delete).not.toHaveBeenCalled();
   });
 });

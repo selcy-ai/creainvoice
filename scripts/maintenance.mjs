@@ -235,12 +235,12 @@ export async function recomputeOverdue(client, options = {}) {
       job: "overdue-recompute",
       event: "batch",
       batch: batches,
-      matched: rows.length,
-      updated: result.count,
+      matched: ids.rows.length,
+      updated: result.rowCount,
     });
     // No progress (rows changed concurrently) or a partial batch means the
     // candidate set is drained — stop instead of re-querying forever.
-    if (result.count === 0 || rows.length < batchSize) break;
+    if (result.rowCount === 0 || ids.rows.length < batchSize) break;
   }
   log({ job: "overdue-recompute", event: "summary", batches, updated });
   return { updated, batches };

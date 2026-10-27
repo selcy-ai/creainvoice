@@ -122,8 +122,6 @@ export const auditAction = pgEnum("audit_action", [
   "INVOICE_CANCELLED",
   "INVOICE_REVISED",
   "PAYMENT_RECORDED",
-  "ADMIN_VIEWED_INVOICE",
-  "PDF_JOB_RETRIED",
 ]);
 
 // ─── Clerk-mirrored identity ────────────────────────────────────────────────
@@ -257,8 +255,12 @@ export const invoiceProfiles = pgTable(
     email: text("email"),
     website: text("website"),
     taxId: text("tax_id"),
-    defaultBankAccountId: text("default_bank_account_id"),
-    defaultSignerId: text("default_signer_id"),
+    defaultBankAccountId: text("default_bank_account_id").references(() => bankAccounts.id, {
+      onDelete: "set null",
+    }),
+    defaultSignerId: text("default_signer_id").references(() => signers.id, {
+      onDelete: "set null",
+    }),
     numberPattern: text("number_pattern")
       .notNull()
       .default("INV/{CODE}/{ROMAN_MONTH}/{YYYY}/{SEQ:3}"),

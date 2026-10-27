@@ -428,76 +428,55 @@ describe("filters (Check When Done)", () => {
 // ─── Row action permissions ───────────────────────────────────────────────
 
 describe("row actions are permission-aware (Check When Done)", () => {
-  it("VIEWER: preview/download only", async () => {
-    const result = await list(viewerCtx(), { pageSize: 50 });
-    expect(result.total).toBe(7);
-    for (const row of result.rows) {
-      expect(row.permissions.view).toBe(true);
-      expect(row.permissions.edit).toBe(false);
-      expect(row.permissions.issue).toBe(false);
-      expect(row.permissions.markSent).toBe(false);
-      expect(row.permissions.cancel).toBe(false);
-      expect(row.permissions.revise).toBe(false);
-      expect(row.permissions.remove).toBe(false);
-      expect(row.permissions.duplicate).toBe(false);
-      expect(row.permissions.recordPayment).toBe(false);
-      expect(row.permissions.createSettlement).toBe(false);
-      // No official PDF was rendered in this suite → the download link stays
-      // hidden rather than 404ing (no fake button).
-      expect(row.permissions.downloadPdf).toBe(false);
+  it("flat workspace: every member gets the full action set (Change 6)", async () => {
+    // Change 6: role tiers are gone — every member is a full admin, so the
+    // row flags no longer differ between VIEWER / STAFF / owner. What still
+    // varies is the STATUS of the row: a draft is editable, an issued invoice
+    // is not, a cancelled/paid one cannot be cancelled again.
+    for (const ctx of [ownerCtx(), staffCtx(), viewerCtx()]) {
+      const result = await list(ctx, { pageSize: 50 });
+      expect(result.total).toBe(7);
+      const byId = new Map(result.rows.map((row) => [row.id, row]));
+
+      const draft = byId.get(ids.draftA)!;
+      expect(draft.permissions).toMatchObject({
+        view: true,
+        edit: true,
+        issue: true,
+        duplicate: true,
+        remove: true,
+        markSent: false,
+        recordPayment: false,
+        createSettlement: false,
+      });
+
+      const issued = byId.get(ids.issuedOk)!;
+      expect(issued.permissions).toMatchObject({
+        edit: false,
+        issue: false,
+        markSent: true,
+        recordPayment: true,
+        cancel: true,
+        revise: true,
+        duplicate: false,
+        remove: false,
+      });
+
+      // Status gates still apply to everyone equally.
+      const cancelled = byId.get(ids.cancelled)!;
+      expect(cancelled.permissions.cancel).toBe(false);
+      expect(cancelled.permissions.revise).toBe(false);
+      expect(cancelled.permissions.issue).toBe(false);
+
+      const paid = byId.get(ids.paid)!;
+      expect(paid.permissions.cancel).toBe(false);
+      expect(paid.permissions.revise).toBe(false);
+      expect(paid.permissions.recordPayment).toBe(true);
+
+      // Settlement only exists where there is a project to settle.
+      expect(byId.get(ids.draftB)!.permissions.createSettlement).toBe(true);
+      expect(byId.get(ids.draftA)!.permissions.createSettlement).toBe(false);
     }
-  });
-
-  it("STAFF: edit/issue/duplicate/delete on drafts, mark sent + payment on issued, NO cancel/revise", async () => {
-    const result = await list(staffCtx(), { pageSize: 50 });
-    const byId = new Map(result.rows.map((row) => [row.id, row]));
-
-    const draft = byId.get(ids.draftA)!;
-    expect(draft.permissions).toMatchObject({
-      edit: true,
-      issue: true,
-      duplicate: true,
-      remove: true,
-      markSent: false,
-      cancel: false,
-      revise: false,
-      recordPayment: false,
-    });
-
-    const issued = byId.get(ids.issuedOk)!;
-    expect(issued.permissions).toMatchObject({
-      edit: false,
-      issue: false,
-      markSent: true,
-      recordPayment: true,
-      cancel: false,
-      revise: false,
-      duplicate: false,
-      remove: false,
-    });
-  });
-
-  it("OWNER/ADMIN: + cancel and revise, and only while the service accepts them", async () => {
-    const result = await list(ownerCtx(), { pageSize: 50 });
-    const byId = new Map(result.rows.map((row) => [row.id, row]));
-
-    const issued = byId.get(ids.issuedOk)!;
-    expect(issued.permissions.cancel).toBe(true);
-    expect(issued.permissions.revise).toBe(true);
-
-    const cancelled = byId.get(ids.cancelled)!;
-    expect(cancelled.permissions.cancel).toBe(false);
-    expect(cancelled.permissions.revise).toBe(false);
-    expect(cancelled.permissions.issue).toBe(false);
-
-    const paid = byId.get(ids.paid)!;
-    expect(paid.permissions.cancel).toBe(false);
-    expect(paid.permissions.revise).toBe(false);
-    expect(paid.permissions.recordPayment).toBe(true);
-
-    // Settlement only exists where there is a project to settle.
-    expect(byId.get(ids.draftB)!.permissions.createSettlement).toBe(true);
-    expect(byId.get(ids.draftA)!.permissions.createSettlement).toBe(false);
   });
 });
 

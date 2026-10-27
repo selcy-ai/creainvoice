@@ -92,7 +92,7 @@ function displayName(payload: UserPayload): string | null {
   return joined || null;
 }
 
-export default async function POST(request: NextRequest): Promise<Response> {
+export async function POST(request: NextRequest): Promise<Response> {
   let event;
   try {
     event = await verifyWebhook(request);
@@ -198,12 +198,22 @@ export default async function POST(request: NextRequest): Promise<Response> {
               updatedAt: new Date(),
             },
           });
-        logger.info(
-          { module: "clerk-webhook", type, organizationId: payload.id },
-          "organization disinkronkan",
-        );
-        break;
-      }
+          logger.info(
+            { module: "clerk-webhook", type, organizationId: payload.id },
+            "organization disinkronkan",
+          );
+          if (type === "organization.created") {
+            writeAudit({
+              action: "ORGANIZATION_CREATED",
+              organizationId: payload.id,
+              actorUserId: null,
+              entityType: "organization",
+              entityId: payload.id,
+              metadata: { name: payload.name, slug: payload.slug || payload.id },
+            });
+          }
+          break;
+        }
 
       case "organization.deleted": {
         const payload = data as unknown as { id?: string };
@@ -251,6 +261,14 @@ export default async function POST(request: NextRequest): Promise<Response> {
           },
           "membership disinkronkan",
         );
+        writeAudit({
+          action: "MEMBERSHIP_CHANGED",
+          organizationId: payload.organization_id,
+          actorUserId: userId,
+          entityType: "membership",
+          entityId: payload.id,
+          metadata: { change: type === "organizationMembership.created" ? "created" : "updated" },
+        });
         break;
       }
 
@@ -262,6 +280,14 @@ export default async function POST(request: NextRequest): Promise<Response> {
             { module: "clerk-webhook", type, membershipId: payload.id },
             "membership dihapus",
           );
+          writeAudit({
+            action: "MEMBERSHIP_CHANGED",
+            organizationId: null,
+            actorUserId: null,
+            entityType: "membership",
+            entityId: payload.id,
+            metadata: { change: "deleted" },
+          });
         }
         break;
       }

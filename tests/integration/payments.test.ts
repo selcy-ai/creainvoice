@@ -303,7 +303,11 @@ describe("record payment (Check When Done)", () => {
 // ─── Overpayment ─────────────────────────────────────────────────────────
 
 describe("overpayment (Check When Done)", () => {
-  it("blocks STAFF until they confirm, then records the excess", async () => {
+  it("records the excess once the overpayment is confirmed", async () => {
+    // Change 6: role tiers are gone — every member is a full admin, so
+    // `payment.override` is granted to everyone and the override REASON (the
+    // old OWNER/ADMIN path) is what every caller must supply. Confirmation
+    // alone is no longer enough, because there is no non-override role left.
     const id = await issueQuick();
 
     const failure = await expectAppFailure(
@@ -315,14 +319,13 @@ describe("overpayment (Check When Done)", () => {
 
     const outcome = await recordPayment(
       id,
-      paymentInput({ amount: "3000000", confirmOverpayment: true }),
+      paymentInput({ amount: "3000000", confirmOverpayment: true, overpaymentReason: "DP digabung" }),
       staffCtx(),
     );
     expect(outcome.status).toBe("PAID");
     expect(outcome.amountPaid).toBe("3000000.00");
-    // STAFF confirms — no reason column to fill, and none stored.
     const payment = await db.payment.findUnique({ where: { id: outcome.paymentId } });
-    expect(payment!.overpaymentReason).toBeNull();
+    expect(payment!.overpaymentReason).toBe("DP digabung");
 
     const audit = await db.auditLog.findFirst({
       where: { action: "PAYMENT_RECORDED", entityId: outcome.paymentId },
@@ -438,7 +441,9 @@ describe("proof upload (Check When Done)", () => {
 // ─── Reversal ────────────────────────────────────────────────────────────
 
 describe("delete payment / reversal (Check When Done)", () => {
-  it("is OWNER/ADMIN only, recomputes status, cleans up the proof and audits", async () => {
+  it("any member may reverse; recomputes status, cleans up the proof and audits", async () => {
+    // Change 6: role tiers are gone — payment.delete is no longer
+    // OWNER/ADMIN-only, so a STAFF/VIEWER reversal succeeds too.
     const id = await issueQuick();
     const file = new File([PNG_BYTES], "bukti.png", { type: "image/png" });
     const p1 = await recordPayment(id, paymentInput({ amount: "1000000" }), ownerCtx());
@@ -450,11 +455,21 @@ describe("delete payment / reversal (Check When Done)", () => {
     );
     expect((await db.invoice.findUnique({ where: { id } }))!.status).toBe("PAID");
 
-    // STAFF cannot reverse.
-    await expectAppFailure(deletePayment(p2.paymentId, staffCtx()), "FORBIDDEN");
-
+    // Any member can reverse (flat workspace).
     const proofPath = (await db.payment.findUnique({ where: { id: p2.paymentId } }))!.proofPath!;
     expect(existsSync(resolve(env.STORAGE_ROOT, proofPath))).toBe(true);
+
+    // The reversal by a STAFF member succeeds (Change 6 — no role tiers).
+    // p1 (1.000.000) + p2 (1.250.000) already cover the 2.250.000 total, so
+    // this third payment is an overpayment (a reason is required for it) and
+    // removing it lands back on PAID.
+    const p3 = await recordPayment(
+      id,
+      paymentInput({ amount: "1250000", overpaymentReason: "tambahan STAFF" }),
+      staffCtx(),
+    );
+    const reversedByStaff = await deletePayment(p3.paymentId, staffCtx());
+    expect(reversedByStaff.status).toBe("PAID");
 
     const back = await deletePayment(p2.paymentId, ownerCtx());
     expect(back.status).toBe("PARTIALLY_PAID");

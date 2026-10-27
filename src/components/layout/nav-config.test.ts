@@ -76,7 +76,13 @@ describe("nav-config", () => {
       bankAccounts: false,
       signers: false,
     });
-    expect(closed.length).toBe(2); // dashboard + invoices are never gated
-    expect(closed.map((link) => link.href)).toEqual(["/dashboard", "/invoices"]);
+    // The never-gated entries: dashboard, invoices, and the org's own profile
+    // (every workspace has exactly one — there is nothing to gate it on).
+    expect(closed.length).toBe(3);
+    expect(closed.map((link) => link.href)).toEqual([
+      "/dashboard",
+      "/invoices",
+      "/profiles",
+    ]);
   });
 });

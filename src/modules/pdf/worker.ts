@@ -89,9 +89,9 @@ export async function claimNextJob(): Promise<ClaimedJob | null> {
         LIMIT 1
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING "id", "invoice_id", "attempt"
+      RETURNING "id", "invoice_id" AS "invoiceId", "attempt"
     )
-    SELECT "id", "invoice_id", "attempt" FROM claimed
+    SELECT "id", "invoiceId", "attempt" FROM claimed
   `);
   const row = rows.rows[0] as unknown as ClientClaimedRow | undefined;
   return row

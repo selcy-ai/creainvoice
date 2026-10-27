@@ -24,7 +24,7 @@ import {
 import { db } from "@/server/db";
 import { auditLogs, customers, invoices, payments, users } from "@/db/schema";
 import type { AuditAction } from "@/db/enums";
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql, sum } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, sql, sum } from "drizzle-orm";
 import type { PermissionContext } from "@/modules/workspace/permissions";
 
 export type DashboardContext = { scope: PermissionContext };
@@ -116,7 +116,7 @@ export async function getDashboardCards(ctx: DashboardContext): Promise<Dashboar
     db
       .select({ value: sql<number>`count(*)::int` })
       .from(customers)
-      .where(and(eq(customers.organizationId, organizationId), isNotNull(customers.deletedAt))),
+      .where(and(eq(customers.organizationId, organizationId), isNull(customers.deletedAt))),
   ]);
 
   const money = (value: string | null): string =>

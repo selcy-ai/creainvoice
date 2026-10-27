@@ -400,29 +400,25 @@ describe("prefill dari project (feature 03 contract)", () => {
 });
 
 describe("permission & org isolation", () => {
-  it("denies VIEWER create and update (403)", async () => {
-    const failure = await expectAppFailure(createDraft(draftInput(), viewerCtx()), "FORBIDDEN");
-    expect(failure.message).toMatch(/izin/i);
+  it("allows every member to create and update a draft (flat workspace)", async () => {
+    // Change 6: role tiers are gone — a VIEWER is a full admin of the
+    // workspace, so create/update by any member succeeds; org isolation is
+    // the only gate that remains.
+    const viewerDraft = await createDraft(draftInput(), viewerCtx());
+    const updated = await updateDraft(
+      viewerDraft.id,
+      draftInput({ notes: "diubah viewer" }),
+      viewerCtx(),
+    );
+    expect(updated.notes).toBe("diubah viewer");
 
     const created = await createDraft(draftInput(), ownerCtx());
-    await expectAppFailure(
-      updateDraft(created.id, draftInput({ notes: "diubah viewer" }), viewerCtx()),
-      "FORBIDDEN",
-    );
-
-    // Nothing was written through the forbidden path.
-    const reloaded = await getDraft(created.id, ownerCtx());
-    expect(reloaded.notes).toBeNull();
-  });
-
-  it("allows STAFF to create and update a draft", async () => {
-    const created = await createDraft(draftInput(), staffCtx());
-    const updated = await updateDraft(
+    const updatedByStaff = await updateDraft(
       created.id,
-      draftInput({ notes: "staff simpan" }),
+      draftInput({ notes: "diubah staff" }),
       staffCtx(),
     );
-    expect(updated.notes).toBe("staff simpan");
+    expect(updatedByStaff.notes).toBe("diubah staff");
   });
 
   it("answers 404 for a draft from another organization (IDOR)", async () => {

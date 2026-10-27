@@ -21,7 +21,7 @@ import { db } from "@/server/db";
 import { projectFormSchema } from "@/modules/projects/schema";
 import { customers, invoices, projectReferences } from "@/db/schema";
 import type { AuditAction, ProjectStatus, ReferenceType } from "@/db/enums";
-import { and, asc, count, desc, eq, ilike, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
 import type { z } from "zod";
 
 export type ProjectFormInput = z.infer<typeof projectFormSchema>;
@@ -530,6 +530,7 @@ export async function getProjectBilling(
       and(
         eq(invoices.organizationId, ctx.scope.organizationId),
         eq(invoices.projectReferenceId, project.id),
+        inArray(invoices.status, [...BILLED_STATUSES]),
       ),
     );
   return {

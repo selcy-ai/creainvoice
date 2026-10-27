@@ -141,22 +141,16 @@ describe("invoice profile CRUD", () => {
 });
 
 describe("authorization", () => {
-  it("denies VIEWER profile writes (org.settings.update is OWNER/ADMIN)", async () => {
+  it("allows every member to write the org profile (flat workspace contract)", async () => {
+    // Change 6: role tiers are gone — org.settings.update is no longer
+    // OWNER/ADMIN-only; every member is a full admin of the workspace.
     const profile = await getProfileByOrg(org.id);
-    const failure = await expectAppFailure(
-      updateProfile(profile!.id, { name: "Diedit Viewer" }, viewerCtx()),
-      "FORBIDDEN",
-    );
-    expect(failure.message).toMatch(/izin/i);
+    const updated = await updateProfile(profile!.id, { name: "Diedit Member" }, viewerCtx());
+    expect(updated.primaryColor).toBe("#ff5500");
 
-    await expectAppFailure(
-      createProfile(viewerCtx(), { name: "Palsu", code: "XX" }),
-      "FORBIDDEN",
-    );
-
-    // Nothing changed on disk-of-truth.
+    // The update by another member also lands on the disk-of-truth.
     const after = await getProfileForScope(profile!.id, ownerCtx());
-    expect(after.name).toBe("CreaInvoice Studio");
+    expect(after.name).toBe("Diedit Member");
   });
 
   it("answers 404 for a profile from another organization and for a missing id", async () => {
@@ -254,9 +248,10 @@ describe("bank account encryption at rest", () => {
       ownerCtx(),
     );
 
-    // Raw column value as Postgres holds it (Prisma performs no decryption).
+    // Raw column value as Postgres holds it (the service performs no decryption).
+    // Change 6: Drizzle's real column name is the snake_case account_number_encrypted.
     const raw = await db.$queryRaw<{ value: string }>`
-      SELECT "accountNumberEncrypted" AS value FROM "BankAccount" WHERE id = ${account.id}`;
+      SELECT "account_number_encrypted" AS value FROM "bank_account" WHERE id = ${account.id}`;
     expect(raw).toHaveLength(1);
     const storedValue = raw[0]!.value;
     expect(storedValue).not.toContain(PLAIN_DIGITS);

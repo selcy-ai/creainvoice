@@ -62,6 +62,7 @@ let bankId: string;
 let signerId: string;
 let projectId: string; // P1 — DP + settlement + cancel story
 let projectId2: string; // P2 — revision story
+let projectId3: string; // P3 — permissions test (own rows, own counts)
 let foreignCustomerId: string;
 
 /** The base issued invoice (first issue of the file → 001). */
@@ -185,6 +186,13 @@ beforeAll(async () => {
     ownerCtx(),
   );
   projectId2 = project2.id;
+  // P3 — owned by the permissions test so its invoices never perturb the
+  // billedToDate counts the earlier tests assert (Category 4 self-containment).
+  const project3 = await createProject(
+    projectInput(customerId, { title: "Proyek Perizinan", workValue: "4500000" }),
+    ownerCtx(),
+  );
+  projectId3 = project3.id;
 }, 60_000);
 
 // ─── Issue flow ───────────────────────────────────────────────────────────
@@ -558,34 +566,30 @@ describe("OVERDUE on read (Check When Done)", () => {
 // ─── Permissions & org isolation ──────────────────────────────────────────
 
 describe("permissions (Check When Done)", () => {
-  it("STAFF can issue, cannot cancel or revise", async () => {
-    const draft = await createDraft(draftInput(), staffCtx());
+  it("every member can issue, cancel and revise (flat workspace contract)", async () => {
+    // Change 6: role tiers are gone — STAFF/VIEWER refusal assertions are
+    // stale: every member is a full admin, so cancel and revise now succeed
+    // for them too. Org isolation remains the only gate. Uses its own project
+    // (P3) so the other tests' billedToDate counts stay untouched.
+    const draft = await createDraft(draftInput({ projectReferenceId: projectId3 }), staffCtx());
     const outcome = await issueInvoice(draft.id, staffCtx());
     expect(outcome.number).toMatch(/^INV\/SB\/VII\/2026\/\d{3}$/);
 
-    await expectAppFailure(cancelInvoice(draft.id, "alasan", staffCtx()), "FORBIDDEN");
-    await expectAppFailure(createRevision(draft.id, staffCtx()), "FORBIDDEN");
-    // Nothing changed through the forbidden paths.
-    const row = await db.invoice.findUnique({ where: { id: draft.id } });
-    expect(row!.status).toBe("ISSUED");
-    expect(row!.cancelledAt).toBeNull();
-    expect(row!.replacedById).toBeNull();
-  });
+    const cancelled = await cancelInvoice(draft.id, "alasan", staffCtx());
+    expect(cancelled.status).toBe("CANCELLED");
 
-  it("VIEWER can read the issued invoice but cannot issue, mark sent, cancel or revise", async () => {
-    const detail = await getInvoiceDetail(issuedId, viewerCtx());
-    expect(detail.number).toBe("INV/SB/VII/2026/001");
-    expect(detail.permissions.issue).toBe(false);
-    expect(detail.permissions.markSent).toBe(false);
-    expect(detail.permissions.cancel).toBe(false);
-    expect(detail.permissions.revise).toBe(false);
+    // A VIEWER may revise an issued invoice and the original goes REVISED.
+    const issued = await createDraft(draftInput({ projectReferenceId: projectId3 }), ownerCtx());
+    const issuedOutcome = await issueInvoice(issued.id, ownerCtx());
+    expect(issuedOutcome.number).toMatch(/^INV\/SB\/VII\/2026\/\d{3}$/);
+    const revised = await createRevision(issued.id, viewerCtx());
+    expect(revised.originalId).toBe(issued.id);
+    const original = await db.invoice.findUnique({ where: { id: issued.id } });
+    expect(original!.status).toBe("REVISED");
 
-    const draft = await createDraft(draftInput(), ownerCtx());
-    await expectAppFailure(issueInvoice(draft.id, viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(markSent(issuedId, viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(cancelInvoice(issuedId, "alasan", viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(createRevision(issuedId, viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(getDraft(draft.id, viewerCtx()), "FORBIDDEN");
+    // P3 counts neither the CANCELLED nor the REVISED row (invariant 6).
+    const billing = await getProjectBilling(projectId3, ownerCtx());
+    expect(billing.invoiceCount).toBe(0);
   });
 });
 
@@ -602,22 +606,37 @@ describe("org isolation (Check When Done)", () => {
   });
 
   it("every allocated number is unique across the whole run", async () => {
+    // Self-contained (Category 4): issue this test's own invoices on its own
+    // project (P3) instead of depending on which rows the preceding tests
+    // happened to leave behind.
+    const ownNumbers: string[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const draft = await createDraft(
+        draftInput({ projectReferenceId: projectId3 }),
+        ownerCtx(),
+      );
+      const outcome = await issueInvoice(draft.id, ownerCtx());
+      ownNumbers.push(outcome.number);
+    }
+
     const rows = await db.invoice.findMany({
-      where: { number: { not: null } },
+      where: { number: { in: ownNumbers } },
       select: { number: true },
     });
     const numbers = rows.map((row) => row.number);
-    expect(numbers.length).toBeGreaterThanOrEqual(6);
+    expect(numbers.length).toBe(ownNumbers.length);
     expect(new Set(numbers).size).toBe(numbers.length);
 
-    // All four feature-05 audit actions exist.
+    // All four feature-05 audit actions exist for the rows this file issued.
     for (const action of ["INVOICE_ISSUED", "INVOICE_SENT", "INVOICE_CANCELLED", "INVOICE_REVISED"] as const) {
       const count = await db.auditLog.count({ where: { action } });
       expect(count, action).toBeGreaterThan(0);
     }
 
     // Every issued invoice has exactly one PENDING PDF job (enqueue-only here).
-    const issued = await db.invoice.findMany({ where: { status: { in: ["ISSUED", "SENT"] } } });
+    const issued = await db.invoice.findMany({
+      where: { status: { in: ["ISSUED", "SENT"] } },
+    });
     for (const row of issued) {
       const jobs = await db.pdfJob.findMany({ where: { invoiceId: row.id } });
       expect(jobs.length, row.id).toBe(1);

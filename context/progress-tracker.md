@@ -51,9 +51,23 @@ Update this file whenever the current phase, active feature, or implementation s
 
 ## Next Up
 
-- **Change 6 (`13-change-creainvoice-clerk-neon-drizzle.md`) — build berjalan.** Repo sudah dipindahkan ke `selcy-ai/creainvoice` ( history penuh, `git remote set-url` selesai ). Target: rebrand total + Clerk auth + Neon/Drizzle. Model build: `omniroute/intern-ai/Atria-Dawn`. engineer tidur, berharap progress maksimal saat bangun; sisanya terdokumentasi.
-
 - *(kosong — feature 11 selesai; **project GA**. Backlog pasca-GA = daftar Open Questions di bawah, diambil satu per satu di chat terpisah.)*
+
+## Completed
+
+- **Change 6 (`13-change-creainvoice-clerk-neon-drizzle.md`) — rebrand + Clerk + Neon/Drizzle SELESAI.** Repo sudah dipindahkan ke `selcy-ai/creainvoice` (history penuh, `git remote set-url` selesai). Verifikasi akhir R3: **unit+integration 608/608 (48 files)**, typecheck 0 error, production build PASS (dengan env Clerk valid), lint 39 problem (2 error + 37 warning — **semua pre-existing**, jumlah identik sebelum/sesudah perubahan). Catatan: build gagal di sandbox ini tanpa env Credentials Clerk/BETTER_AUTH yang valid; `next build` lulus dengan placeholder Clerk yang memenuhi zod schema.
+  - **Test suite fix (R3):** 42 failure → 0. Diperbaiki per-kategori: (1) role-tier assertion usang → kontrak flat workspace (bank-signers, invoice-engine/list/lifecycle, payments, onboarding-profile — semua member admin penuh, hapus distinsi VIEWER/STAFF); (2) audit emit-point untuk modul yang dihapus; (3) kontrak Drizzle (numeric → "50.00" vs Decimal "50", raw SQL snake_case `bank_account`/`account_number_encrypted`); (4) test counting di-scope ke row milik sendiri (project P3 di invoice-lifecycle), invariant billed-sum tetap utuh.
+  - **Bukan sekadar test — 8 bug migrasi Prisma→Drizzle yang terbukti (diff vs `5eee3b4`, semua ditemukan karena test menolak lolos):**
+    1. `pdf/worker.ts` — claim query RETURNING `"invoice_id"` tapi kode baca `row.invoiceId` → `invoiceId: "undefined"` → semua 6 job PDF gagal NOT_FOUND.
+    2. `db/schema.ts` — `invoiceProfiles.defaultBankAccountId/defaultSignerId` tanpa `.references(onDelete: "set null")` → hard delete meninggalkan dangling id (Prisma punya SetNull).
+    3. `dashboard/service.ts` — `customerCount` pakai `isNotNull(deletedAt)` (menghitung customer yang **sudah di-soft-delete**); Prisma `deletedAt: null`.
+    4. `projects/service.ts` — `getProjectBilling.invoiceCount` menghitung SEMUA status termasuk DRAFT; Prisma filter `status in BILLED_STATUSES`.
+    5. `invoices/query-service.ts` + `payments/service.ts` — query count memakai kolom `customers`/`invoices` tanpa join → `42P01 missing FROM-clause entry` (6 test SQL error); Prisma pakai relation filter.
+    6. `scripts/maintenance.mjs` — referensi `rows` yang tidak didefinisikan (fatal ReferenceError, `ids.rows` yang dimaksud).
+    7. `db/id.ts` — alphabet base36 hanya 33 char (digit `7/8/9` hilang) → ~3/36 id mengandung literal string **"undefined"** (intermiten, lolos dari R2). Diverifikasi: 2M id setelah fix = 0 bad.
+    8. `app/api/clerk/webhook/route.ts` — `export default async function POST` tidak cocok dengan `RouteHandlerConfig` Next 16 → **build gagal TS2559** (pre-existing di HEAD). Fix: `export async function POST`.
+  - **Audit enum (Change 6 consequence):** `ADMIN_VIEWED_INVOICE` + `PDF_JOB_RETRIED` dihapus dari `AuditAction` — satu-satunya emit point mereka adalah `modules/admin` yang dihapus bersama PlatformRole. `ORGANIZATION_CREATED` + `MEMBERSHIP_CHANGED` tetap (emit point baru di Clerk webhook, sesuai design Change 6 bahwa org-scope events tetap tercatat). Enum turun 22 → 20, invariant "setiap AuditAction punya emit point" tetap lulus.
+  - **Dokumentasi R3:** `.opencode-prompt-feat13-r3.txt` (di-commit R2) berisi diagnosis kategori 1-4. Catatan tambahan R3: diagnosis "services are CORRECT" ternyata tidak sepenuhnya benar — 8 dari 43 failure adalah bug migrasi nyata, masing-masing terbukti dengan `git show 5eee3b4:<file>`. Pelajaran: ketika test menolak lolos setelah 2 kali fix kategori, bandingkan dengan implementasi pre-migrasi sebelum menyimpulkan "stale test".
 
 ## Open Questions
 

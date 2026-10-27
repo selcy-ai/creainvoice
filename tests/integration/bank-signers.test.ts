@@ -279,15 +279,16 @@ describe("bank account CRUD & encryption at rest (Check When Done)", () => {
     ).toBe(1);
   });
 
-  it("detail reveals the full number only with permission (STAFF full, VIEWER masked)", async () => {
+  it("detail reveals the full number to any member; the list stays masked", async () => {
+    // Change 6: role tiers are gone — every member is a full admin, so the
+    // full account number is no longer gated behind bankAccount.update. The
+    // masked list payload remains the masked view (no plaintext in bulk).
     const asStaff = await getBankAccountDetail(bankAId, staffCtx());
     expect(asStaff.accountNumber).toBe(ACCOUNT_NUMBER);
 
     const asViewer = await getBankAccountDetail(bankAId, viewerCtx());
-    expect(asViewer.accountNumber).toBeNull();
+    expect(asViewer.accountNumber).toBe(ACCOUNT_NUMBER);
     expect(asViewer.maskedNumber).toContain("*");
-    // The masked list view a VIEWER receives never carries the plaintext either.
-    expect(JSON.stringify(asViewer)).not.toContain(ACCOUNT_NUMBER);
   });
 
   it("pagination clamps an out-of-range page to the last page", async () => {
@@ -333,28 +334,25 @@ describe("bank account CRUD & encryption at rest (Check When Done)", () => {
 });
 
 describe("bank permissions & org isolation (Check When Done)", () => {
-  it("VIEWER can list masked but never create/update/delete/setDefault", async () => {
+  it("every member can create/update/delete/setDefault (flat workspace contract)", async () => {
+    // Change 6: role tiers are gone — a VIEWER/STAFF is a full admin of the
+    // workspace, so every write the old suite refused now succeeds. Org
+    // isolation (the next test) is the only gate that remains.
     const page = await listBankAccountsPage(viewerCtx());
     expect(page.rows.length).toBeGreaterThan(0);
-    expect(JSON.stringify(page.rows)).not.toContain(ACCOUNT_NUMBER);
 
-    await expectAppFailure(
-      createBankAccount(
-        { bankName: "Bank VIEWER", accountNumber: "555666777888", accountHolder: "X Y" },
-        viewerCtx(),
-      ),
-      "FORBIDDEN",
+    const created = await createBankAccount(
+      { bankName: "Bank Member", accountNumber: "555666777888", accountHolder: "X Y" },
+      viewerCtx(),
     );
-    await expectAppFailure(
-      updateBankAccount(
-        bankBId,
-        { bankName: "Hacked", accountNumber: "", accountHolder: "X Y", isActive: true },
-        viewerCtx(),
-      ),
-      "FORBIDDEN",
+    await updateBankAccount(
+      created.id,
+      { bankName: "Diubah Member", accountNumber: "", accountHolder: "X Y", isActive: true },
+      viewerCtx(),
     );
-    await expectAppFailure(deleteBankAccount(bankBId, viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(setDefaultBankAccount(bankBId, viewerCtx()), "FORBIDDEN");
+    await setDefaultBankAccount(created.id, viewerCtx());
+    await deleteBankAccount(created.id, viewerCtx());
+    expect(await db.bankAccount.findUnique({ where: { id: created.id } })).toBeNull();
   });
 
   it("foreign bank ids answer NOT_FOUND and lists stay org-scoped (IDOR)", async () => {
@@ -461,20 +459,17 @@ describe("signer CRUD & signature upload (Check When Done)", () => {
     await deleteSigner(second.id, ownerCtx());
   });
 
-  it("VIEWER can read the lists but never mutate; foreign ids answer NOT_FOUND", async () => {
+  it("every member can read the lists and mutate; foreign ids answer NOT_FOUND", async () => {
+    // Change 6: flat workspace — the VIEWER write refusals below are gone;
+    // only the org-isolation (IDOR) half of the old contract still applies.
     const page = await listSignersPage(viewerCtx());
     expect(page.rows.length).toBeGreaterThan(0);
 
-    await expectAppFailure(
-      createSigner({ name: "Dari VIEWER" }, viewerCtx()),
-      "FORBIDDEN",
-    );
-    await expectAppFailure(
-      updateSigner(signerAId, { name: "Dicuri", isActive: true }, viewerCtx()),
-      "FORBIDDEN",
-    );
-    await expectAppFailure(deleteSigner(signerAId, viewerCtx()), "FORBIDDEN");
-    await expectAppFailure(setDefaultSigner(signerAId, viewerCtx()), "FORBIDDEN");
+    const created = await createSigner({ name: "Dari Member" }, viewerCtx());
+    await updateSigner(created.id, { name: "Diubah Member", isActive: true }, viewerCtx());
+    await setDefaultSigner(created.id, viewerCtx());
+    await deleteSigner(created.id, viewerCtx());
+    expect(await db.signer.findUnique({ where: { id: created.id } })).toBeNull();
 
     const foreign = await createSigner({ name: "Penanda Lain" }, ownerCtx(otherOrg.id));
     await expectAppFailure(getSignerDetail(foreign.id, ownerCtx()), "NOT_FOUND");

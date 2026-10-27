@@ -11,7 +11,14 @@
 
 import { randomBytes } from "node:crypto";
 
-const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456";
+/**
+ * Base-36 alphabet — 26 letters (a-z) + 10 digits (0-9) = exactly 36 symbols.
+ * Must stay in sync with BASE: every value 0..35 has to map to a real
+ * character, otherwise `ALPHABET[v % BASE]` yields `undefined` and the id
+ * literally contains the string "undefined" (a Change 6 bug where the digits
+ * 7/8/9 were missing from the alphabet).
+ */
+const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const BASE = 36;
 
 function toBase36(value: number, length: number): string {

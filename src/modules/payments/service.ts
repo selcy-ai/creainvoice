@@ -575,7 +575,12 @@ export async function listPayments(
   }
   const where = and(...filters);
 
-  const totalRows = await db.select({ value: count() }).from(payments).where(where);
+  const totalRows = await db
+    .select({ value: count() })
+    .from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .leftJoin(customers, eq(customers.id, invoices.customerId))
+    .where(where);
   const total = Number(totalRows[0]?.value ?? 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Math.max(query.page ?? 1, 1), totalPages);
