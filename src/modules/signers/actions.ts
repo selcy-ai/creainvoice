@@ -9,7 +9,7 @@
 
 import { actionRequest, formDataString, toActionError, zodFailure } from "@/lib/action";
 import { apiFailure, apiOk, type ActionResult } from "@/lib/api-response";
-import { requireSession } from "@/lib/clerk";
+import { requireSession } from "@/lib/auth";
 import { requireWorkspaceScope } from "@/modules/workspace/service";
 import { signerSchema } from "@/modules/signers/schema";
 import {

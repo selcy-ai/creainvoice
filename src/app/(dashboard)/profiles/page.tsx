@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/card";
 import { getProfileByOrg } from "@/modules/profiles/service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "Profil Invoice — creainvoice",

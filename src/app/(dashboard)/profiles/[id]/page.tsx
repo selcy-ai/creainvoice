@@ -12,7 +12,7 @@ import { resolveWorkspaceScope } from "@/modules/workspace/service";
 import { getProfileForScope, toProfileView } from "@/modules/profiles/service";
 import { getDefaultBankAccount, toBankAccountView } from "@/modules/bank-accounts/service";
 import { getDefaultSigner, toSignerView } from "@/modules/signers/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 import { env } from "@/server/env";
 
 export const metadata: Metadata = {

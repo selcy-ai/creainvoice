@@ -8,7 +8,7 @@ import { withErrorHandler } from "@/lib/api-response";
 import { AppError } from "@/lib/errors";
 import { getStorageService } from "@/modules/storage";
 import { db } from "@/server/db";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 import { memberships } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 

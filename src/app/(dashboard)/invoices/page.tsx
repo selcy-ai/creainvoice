@@ -26,7 +26,7 @@ import {
   listInvoices,
 } from "@/modules/invoices/query-service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "Invoice — creainvoice",

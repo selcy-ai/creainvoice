@@ -1,13 +1,18 @@
-// src/db/schema.ts — Drizzle schema (Change 6).
+// src/db/schema.ts — Drizzle schema (Change 14: self-hosted better-auth).
 //
-// Ported from prisma/schema.prisma with the Change 6 decisions:
-//   - Better Auth models (user/account/session/verification) are GONE.
-//     Auth is delegated to Clerk; this database only mirrors the rows it
-//     needs (user profile + organization membership) via the Clerk webhook.
+// Ported from prisma/schema.prisma with the Change 6 decisions, then amended
+// by Change 14 which removes Clerk again:
+//   - Better Auth owns the identity tables. `user`, `session`, `account` and
+//     `verification` are the tables better-auth's drizzle adapter reads and
+//     writes (mapped through modelName/fields in src/lib/auth.ts so the DB
+//     column names stay exactly what Change 6 shipped). Organization rows
+//     are still created locally by this app — there is no mirror and no
+//     webhook anymore.
 //   - PlatformRole / organization role tiers are GONE. Every member of an
 //     organization is a full admin of that workspace (flat workspace).
-//   - Identifiers stay cuid-shaped (text primary keys); the Clerk webhook
-//     upserts use the Clerk ids directly.
+//   - Identifiers stay cuid-shaped (text primary keys); better-auth is told
+//     to use the same createId generator (advanced.database.generateId) so
+//     every row in the database keeps the same id shape.
 //
 // Money is numeric(18,2) everywhere (architecture invariant 1); percentages
 // are numeric(5,2). Timestamps are timestamptz (DB UTC, display Asia/Jakarta).
@@ -105,7 +110,6 @@ export const auditAction = pgEnum("audit_action", [
   "USER_CREATED",
   "USER_DELETED",
   "ORGANIZATION_CREATED",
-  "ORGANIZATION_DELETED",
   "MEMBERSHIP_CHANGED",
   "PROFILE_CHANGED",
   "CUSTOMER_CREATED",
@@ -124,29 +128,33 @@ export const auditAction = pgEnum("audit_action", [
   "PAYMENT_RECORDED",
 ]);
 
-// ─── Clerk-mirrored identity ────────────────────────────────────────────────
+// ─── Better Auth identity (Change 14: self-hosted) ──────────────────────────
 
 /**
- * Mirror of the Clerk User. Written by the /api/clerk/webhook route on
- * user.created / user.updated / user.deleted. The password NEVER lives here —
- * Clerk owns credentials; former better-auth hashes cannot be migrated
- * (agreed in Change 6), so every existing user must reset via Clerk.
+ * The better-auth user (Change 14). Was a Clerk mirror under Change 6; now
+ * it IS the source of truth: better-auth writes it on sign-up/sign-in, and
+ * the seed script inserts the demo admin directly.
+ *
+ * Field mapping (src/lib/auth.ts → better-auth): name, email, emailVerified,
+ * image, createdAt, updatedAt are better-auth's core fields; the app's extra
+ * columns (username, status, onboarding flags, timestamps) are declared as
+ * additionalFields so better-auth never writes them itself.
  */
 export const users = pgTable(
   "user",
   {
     id: text("id").primaryKey().$defaultFn(createId),
-    // Display name — Clerk firstName/lastName joined, or the username.
+    // Display name (better-auth core field).
     name: text("name"),
     email: text("email").notNull().unique(),
     emailVerified: boolean("email_verified").notNull().default(false),
+    // better-auth core field (`image`); the column name predates Change 14.
     imageUrl: text("image_url"),
-    // Clerk username (unique in Clerk; kept for display).
     username: text("username"),
     status: userStatus("status").notNull().default("ACTIVE"),
     // Feature 02: onboarding wizard state. onboardingStep tracks resume
     // position (1..12); onboardingComplete flips true only when the wizard
-    // finishes. Clerk users still run the workspace setup wizard.
+    // finishes.
     onboardingComplete: boolean("onboarding_complete").notNull().default(false),
     onboardingStep: integer("onboarding_step").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
@@ -160,8 +168,97 @@ export const users = pgTable(
 );
 
 /**
- * Mirror of a Clerk Organization — the workspace container. Flat: every
- * member is a full admin (Change 6 removed OrganizationRole and role tiers).
+ * better-auth sessions (Change 14). `token` is the cookie value; the active
+ * workspace is stored on the row so the workspace switcher works without a
+ * second cookie (Change 14 replaces Clerk's orgId session claim).
+ */
+export const sessions = pgTable(
+  "session",
+  {
+    id: text("id").primaryKey().$defaultFn(createId),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .default(sql`now()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .default(sql`now()`),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // App-side column (not a better-auth field): the workspace this session
+    // is scoped to. Written by the app after verifying an ACTIVE membership.
+    activeOrganizationId: text("active_organization_id"),
+  },
+  (t) => [index("session_user_idx").on(t.userId)],
+);
+
+/**
+ * better-auth accounts (Change 14). Credential logins land here with
+ * `providerId: "credential"` and an argon2 hash in `password`.
+ */
+export const accounts = pgTable(
+  "account",
+  {
+    id: text("id").primaryKey().$defaultFn(createId),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true, mode: "date" }),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", { withTimezone: true, mode: "date" }),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .default(sql`now()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .default(sql`now()`),
+  },
+  (t) => [
+    index("account_user_idx").on(t.userId),
+    // One account per (provider, user): the credential login is unique per
+    // user, and seed.mjs upserts on this pair.
+    unique("account_provider_user_unique").on(t.providerId, t.userId),
+  ],
+);
+
+/**
+ * better-auth verification tokens (Change 14). Used by the email-verification
+ * flow; kept because better-auth expects the table to exist even when the
+ * app does not send mail yet.
+ */
+export const verifications = pgTable(
+  "verification",
+  {
+    id: text("id").primaryKey().$defaultFn(createId),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .default(sql`now()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .default(sql`now()`),
+  },
+  (t) => [index("verification_identifier_idx").on(t.identifier)],
+);
+
+// ─── Workspace (local source of truth since Change 14) ─────────────────────
+
+/**
+ * The workspace container. Flat: every member is a full admin (Change 6
+ * removed OrganizationRole and role tiers). Change 14 creates these rows
+ * locally — there is no Clerk organization to mirror anymore.
  */
 export const organizations = pgTable(
   "organization",
@@ -181,9 +278,9 @@ export const organizations = pgTable(
 );
 
 /**
- * Mirror of a Clerk OrganizationMembership. NO role column on purpose: every
- * member is a full admin of the workspace (Change 6). Invites still happen
- * through Clerk Organizations.
+ * Workspace membership. NO role column on purpose: every member is a full
+ * admin of the workspace (Change 6). Change 14 inserts these rows directly —
+ * the Clerk organizationMembership webhook is gone.
  */
 export const memberships = pgTable(
   "membership",

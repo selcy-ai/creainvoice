@@ -9,7 +9,7 @@ import { ArrowLeftIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SignerForm } from "@/components/signers/signer-form";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "Tambah Penanda Tangan — creainvoice",

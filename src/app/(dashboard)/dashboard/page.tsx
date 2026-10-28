@@ -22,7 +22,7 @@ import {
   getRecentActivity,
 } from "@/modules/dashboard/service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "Dashboard — creainvoice",
@@ -63,7 +63,7 @@ export default async function DashboardPage() {
     getRecentActivity({ scope }),
   ]);
 
-  const displayName = session?.user?.fullName ?? session?.user?.username ?? session?.user?.primaryEmailAddress?.emailAddress ?? "Pengguna";
+  const displayName = session?.user?.name ?? session?.user?.username ?? session?.user?.email ?? "Pengguna";
 
   return (
     <div className="flex flex-col gap-8">

@@ -1,18 +1,20 @@
-// src/modules/workspace/service.ts — organization scope (Change 6).
+// src/modules/workspace/service.ts — organization scope (Change 6; Change 14
+// removed the Clerk mirror).
 //
 // Replaces the old modules/organizations + modules/permissions pair. The
 // workspace is FLAT: every member of an organization is a full admin
-// (PlatformRole and OrganizationRole tiers were removed). The Clerk session
-// carries the active organization id; this service re-validates the
-// membership against the database on every read — fail closed — which is the
-// invariant that keeps cross-tenant queries impossible.
+// (PlatformRole and OrganizationRole tiers were removed). The better-auth
+// session row carries the active organization id (Change 14); this service
+// re-validates the membership against the database on every read — fail
+// closed — which is the invariant that keeps cross-tenant queries
+// impossible.
 //
-// Invitations still happen through Clerk Organizations (the Clerk dashboard
-// or the OrganizationSwitcher UI), so there is no local invite flow anymore.
+// Change 14: organizations and memberships are local rows owned by this
+// app; there is no external auth organization and no webhook mirror.
 
 import { db } from "@/server/db";
 import { memberships, organizations, users } from "@/db/schema";
-import { activeOrganizationId, type AuthSession } from "@/lib/clerk";
+import { activeOrganizationId, type AuthSession } from "@/lib/auth";
 import { AppError } from "@/lib/errors";
 import { and, asc, eq } from "drizzle-orm";
 
@@ -28,10 +30,11 @@ export interface WorkspaceScope {
 }
 
 /**
- * Resolves the active organization from the Clerk session and RE-VALIDATES
- * the membership every time (ACTIVE membership in an ACTIVE organization).
- * Session claims are set by Clerk, so scope is never trusted without this
- * check.
+ * Resolves the active organization from the better-auth session and
+ * RE-VALIDATES the membership every time (ACTIVE membership in an ACTIVE
+ * organization). The session value is set by this app (Change 14: the
+ * session row's activeOrganizationId), so scope is never trusted without
+ * this check.
  */
 export async function resolveWorkspaceScope(
   session: AuthSession,
@@ -117,8 +120,8 @@ export interface WorkspaceOverview {
 
 /**
  * Memberships + the active organization for the shell. The active org comes
- * from the Clerk session; when it is not a verified membership the first
- * membership is used as a fallback.
+ * from the better-auth session row (Change 14); when it is not a verified
+ * membership the first membership is used as a fallback.
  */
 export async function getWorkspaceOverview(
   session: AuthSession,
@@ -133,8 +136,8 @@ export async function getWorkspaceOverview(
 }
 
 /**
- * Ensures the local user mirror exists for a Clerk user id (written by the
- * webhook, but onboarding reads it before any webhook may have landed —
+ * Ensures a user row exists for a non-auth path (Change 14: better-auth
+ * creates the row at sign-up; some onboarding reads may run before that —
  * idempotent upsert).
  */
 export async function ensureUser(input: {

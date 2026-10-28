@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// scripts/seed.mjs — idempotent demo seed (Change 6: Drizzle/Neon, no Prisma).
+// scripts/seed.mjs — idempotent demo seed (Change 14: self-hosted better-auth).
 //
 // Seeds the neutral demo data the acceptance suite and a fresh install both
-// rely on (Change 6 spec: "fresh start", neutral personas only):
+// rely on:
 //
 //   organization  CreaInvoice Studio (slug crea-invoice-studio)
-//   user          admin@creainvoice.id — a Clerk user MIRROR row
+//   user          admin@creainvoice.id — a REAL better-auth login
 //   customer      PT Cipta Karya Nusantara
 //   PIC           Andi Wijaya
 //   PO            5198021181 (15 Juli 2026, 4.500.000)
@@ -14,9 +14,11 @@
 // Idempotent: re-running never duplicates anything. Every write is an
 // upsert keyed on a stable seed id or a natural key.
 //
-// IMPORTANT (Change 6): Clerk owns credentials — this seed CANNOT create a
-// login. It mirrors the user row the Clerk webhook would write for the
-// demo admin; the actual Clerk user must exist in the Clerk dashboard.
+// IMPORTANT (Change 14): the demo admin is a real login now — the password
+// comes from SEED_ADMIN_PASSWORD (NEVER committed; .env.local or the
+// compose environment) and is hashed with argon2 exactly the way sign-up
+// does it, so `POST /api/auth/sign-in/email` accepts it. The account is
+// created pre-verified so it can sign in before SMTP exists.
 //
 // Runs on plain `node` so the Docker entrypoint and `npm run seed` work
 // without a TypeScript compiler. Column names are the DB's snake_case
@@ -25,6 +27,7 @@
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import argon2 from "argon2";
 import { Pool } from "pg";
 
 // ─── environment ────────────────────────────────────────────────────────────
@@ -64,6 +67,22 @@ function loadEnv() {
     process.exit(1);
   }
   return { url };
+}
+
+/**
+ * The demo admin's initial password. Change 14: the seed creates a REAL
+ * login, so a password is mandatory — reading it from SEED_ADMIN_PASSWORD
+ * keeps it out of the repo (never logged, never echoed).
+ */
+function seedAdminPassword() {
+  const password = process.env.SEED_ADMIN_PASSWORD;
+  if (!password || password.length < 8) {
+    console.error(
+      "[seed] SEED_ADMIN_PASSWORD is missing or shorter than 8 characters — set it in .env.local (never commit it).",
+    );
+    process.exit(1);
+  }
+  return password;
 }
 
 function encryptionKey() {
@@ -286,7 +305,7 @@ async function main() {
   const client = new Pool({ connectionString: url });
 
   try {
-    // ── Admin user (a Clerk mirror row — Clerk owns the credentials) ──────
+    // ── Admin user (a REAL better-auth login, Change 14) ─────────────────
     const user = await upsert(client, "user", "id", {
       id: DEMO_USER.id,
       name: DEMO_USER.name,
@@ -297,7 +316,28 @@ async function main() {
       onboarding_complete: true,
       onboarding_step: 12,
     });
-    console.log(`[seed] demo admin ready: ${user.email} (Clerk owns the login)`);
+
+    // The credential account: argon2-hashed SEED_ADMIN_PASSWORD, provider
+    // "credential", pre-verified. Re-running re-hashes (idempotent result,
+    // not an accumulating row).
+    const password = seedAdminPassword();
+    const passwordHash = await argon2.hash(password);
+    await upsert(
+      client,
+      "account",
+      ["provider_id", "user_id"],
+      {
+        id: "seed_account_admin",
+        account_id: DEMO_USER.id,
+        provider_id: "credential",
+        user_id: user.id,
+        password: passwordHash,
+      },
+      ["password"],
+    );
+    console.log(
+      `[seed] demo admin ready: ${user.email} (login via /login, password from SEED_ADMIN_PASSWORD — rotate after first login)`,
+    );
 
     // ── Organization CreaInvoice Studio ───────────────────────────────────
     const org = await upsert(client, "organization", "slug", {

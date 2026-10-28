@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 import {
   getWorkspaceOverview,
   resolveWorkspaceScope,
@@ -32,8 +32,8 @@ export default async function DashboardLayout({
   return (
     <AppShell
       user={{
-        name: session.user?.fullName ?? session.user?.username ?? null,
-        email: session.user?.primaryEmailAddress?.emailAddress ?? null,
+        name: session.user?.name ?? session.user?.username ?? null,
+        email: session.user?.email ?? null,
       }}
       memberships={overview.memberships}
       activeOrganizationId={overview.activeOrganizationId}

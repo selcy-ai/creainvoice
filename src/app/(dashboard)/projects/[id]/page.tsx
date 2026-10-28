@@ -34,7 +34,7 @@ import {
 } from "@/modules/projects/schema";
 import { getProjectForScope, getProjectBilling, type ProjectDetail } from "@/modules/projects/service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 import { env } from "@/server/env";
 
 export const metadata: Metadata = {

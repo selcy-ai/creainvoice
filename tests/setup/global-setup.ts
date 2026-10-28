@@ -9,7 +9,16 @@
 // a schema change only has to land in src/db/schema.ts to be picked up.
 
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { loadTestEnv } from "./env";
+
+/**
+ * The vitest config runs ESM; `require()` is flagged by the repo's lint
+ * rules, but drizzle-kit's bin path still has to be resolved from the
+ * filesystem at runtime. createRequire keeps the same resolution while
+ * staying lint-clean.
+ */
+const require2 = createRequire(import.meta.url);
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -49,8 +58,8 @@ async function ensureDatabase(testUrl: string, dbName: string): Promise<void> {
  *  src/server/env.ts). Test env files carry the real values; the placeholders
  *  here only satisfy the zod schema for the config module to parse. */
 const CONFIG_PLACEHOLDERS = {
-  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_placeholder",
-  CLERK_SECRET_KEY: "sk_test_placeholder",
+  BETTER_AUTH_SECRET: "test-better-auth-secret-key-at-least-32-characters",
+  BETTER_AUTH_URL: "http://localhost:3000",
   INTERNAL_PDF_SECRET: "test-pdf-secret-at-least-32-characters",
   BANK_ACCOUNT_ENCRYPTION_KEY: "test-bank-key-at-least-32-characters",
   PDF_WORKER_ENABLED: "false",
@@ -82,8 +91,8 @@ export default async function globalSetup(): Promise<void> {
 }
 
 function resolveDrizzleKit(): string {
-  const { existsSync } = require("node:fs") as typeof import("node:fs");
-  const { resolve } = require("node:path") as typeof import("node:path");
+  const { existsSync } = require2("node:fs") as typeof import("node:fs");
+  const { resolve } = require2("node:path") as typeof import("node:path");
   const candidate = resolve(process.cwd(), "node_modules/drizzle-kit/bin.cjs");
   if (!existsSync(candidate)) {
     throw new Error("drizzle-kit not found — run npm install first.");

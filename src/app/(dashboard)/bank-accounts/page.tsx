@@ -23,7 +23,7 @@ import {
 import { SetDefaultBankButton } from "@/components/bank-accounts/set-default-bank-button";
 import { listBankAccountsPage } from "@/modules/bank-accounts/service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "Rekening Bank — creainvoice",

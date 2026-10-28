@@ -14,7 +14,7 @@ import { SignerForm } from "@/components/signers/signer-form";
 import { DeleteSignerButton } from "@/components/signers/delete-signer-button";
 import { getSignerDetail } from "@/modules/signers/service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 import { isAppError } from "@/lib/errors";
 
 export const metadata: Metadata = {

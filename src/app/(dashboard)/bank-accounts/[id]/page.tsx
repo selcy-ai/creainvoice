@@ -15,7 +15,7 @@ import { BankAccountForm } from "@/components/bank-accounts/bank-account-form";
 import { DeleteBankAccountButton } from "@/components/bank-accounts/delete-bank-account-button";
 import { getBankAccountDetail } from "@/modules/bank-accounts/service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 import { isAppError } from "@/lib/errors";
 
 export const metadata: Metadata = {

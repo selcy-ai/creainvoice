@@ -40,7 +40,7 @@ import { getInvoicePaymentPanel, type InvoicePaymentPanel } from "@/modules/paym
 import { PaymentHistory } from "@/components/payments/payment-history";
 import { INVOICE_TYPE_LABELS, INVOICE_TAX_MODE_LABELS } from "@/modules/invoices/schema";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "Detail invoice — creainvoice",

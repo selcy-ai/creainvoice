@@ -304,8 +304,9 @@ describe("maintenance script — structured output", () => {
     // The run finished with the done event (no secret ever printed).
     const serialized = JSON.stringify(firstRunStdout);
     expect(serialized).not.toContain(process.env.DATABASE_URL);
-    // Change 6: better-auth is gone; the Clerk secret is the only credential
-    // the maintenance run could ever leak, and it is never on stdout.
-    expect(serialized).not.toContain(env.CLERK_SECRET_KEY);
+    // Change 14: auth is self-hosted better-auth; the DB url + encryption key
+    // are the only credentials the maintenance run could ever leak, and they
+    // are never on stdout.
+    expect(serialized).not.toContain(env.BANK_ACCOUNT_ENCRYPTION_KEY);
   });
 });

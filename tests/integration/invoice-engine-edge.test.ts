@@ -55,25 +55,17 @@ import {
   type TestUser,
 } from "../factories";
 import { ctxFor } from "@/tests/helpers/context";
-import { clerkSessionMock, setCurrentUser } from "../helpers/clerk-session";
+import { betterAuthSessionMock, signInFor } from "../helpers/auth";
 
-// ─── Clerk session stub for the server-action layer ────────────────────────
-// Server actions resolve the caller through requireSession() (src/lib/clerk),
-// which reads @clerk/nextjs/server. The mock below answers as whichever user
-// the test "signed in" as, and requireWorkspaceScope() then re-validates that
-// user's membership against the real database — so the action layer is
-// exercised in-process with a REAL session (no HTTP server needed).
+// ─── better-auth session stub for the server-action layer ──────────────────
+// Server actions resolve the caller through requireSession() (src/lib/auth),
+// which reads better-auth's auth.api.getSession({ headers }) — itself backed
+// by next/headers. The mock below answers with a REAL session row written
+// into the test database (signInFor), so the action layer runs the exact
+// production code path: cookie → getSession → user + org resolution, with
+// requireWorkspaceScope() re-validating the membership against the database.
 
-vi.mock("@clerk/nextjs/server", () => clerkSessionMock());
-// actionRequest() reads next/headers to attach request metadata to audit rows;
-// the action layer runs in-process, so an empty header set is the right stub.
-vi.mock("next/headers", () => ({
-  headers: async () => new Headers(),
-  cookies: async () => ({
-    get: () => undefined,
-    getAll: () => [],
-  }),
-}));
+vi.mock("next/headers", () => betterAuthSessionMock());
 
 let owner: TestUser;
 let staff: TestUser;
@@ -282,7 +274,7 @@ beforeAll(async () => {
   const project = await createProject(projectInput(customerId), ownerCtx());
   projectId = project.id;
   // Sign in as the OWNER of the main org so the action layer sees a real session.
-  setCurrentUser({ id: owner.id, orgId: org.id });
+  await signInFor(owner.id, org.id);
 });
 
 // ─── Server recalculation ───────────────────────────────────────────────────
@@ -439,7 +431,7 @@ describe("permission — flat workspace: every member can touch drafts", () => {
       await import("@/modules/invoices/actions");
 
     // Sign in as the VIEWER of the main org.
-    setCurrentUser({ id: viewer.id, orgId: org.id });
+    await signInFor(viewer.id, org.id);
 
     const createResult = await createInvoiceDraftAction(actionPayload() as never);
     expect(createResult.ok).toBe(true);
@@ -454,7 +446,7 @@ describe("permission — flat workspace: every member can touch drafts", () => {
     expect(previewResult.ok).toBe(true);
 
     // Restore the OWNER session for the remaining tests.
-    setCurrentUser({ id: owner.id, orgId: org.id });
+    await signInFor(owner.id, org.id);
   });
 
   it("a STAFF member may create and update (flat: every member can)", async () => {
@@ -563,7 +555,7 @@ describe("org isolation — foreign ids answer 404 (IDOR)", () => {
     // Sign in as the OTHER org's owner (a real session for that org).
     const otherOwner = await createUser({ username: "edge.other.owner" });
     await addMembership(otherOwner.id, otherOrg.id, "OWNER");
-    setCurrentUser({ id: otherOwner.id, orgId: otherOrg.id });
+    await signInFor(otherOwner.id, otherOrg.id);
 
     const readResult = await getInvoiceDraftAction({ invoiceId: created.id });
     expect(readResult.ok).toBe(false);
@@ -577,7 +569,7 @@ describe("org isolation — foreign ids answer 404 (IDOR)", () => {
     if (!updateResult.ok) expect(updateResult.error.code).toBe("NOT_FOUND");
 
     // Restore the OWNER session.
-    setCurrentUser({ id: owner.id, orgId: org.id });
+    await signInFor(owner.id, org.id);
   });
 
   it("the number preview answers 404 for a foreign profile id", async () => {

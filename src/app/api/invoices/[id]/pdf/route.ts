@@ -13,7 +13,7 @@
 import { withErrorHandler } from "@/lib/api-response";
 import { downloadOfficialPdf } from "@/modules/pdf/service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 

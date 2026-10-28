@@ -9,10 +9,15 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required (Neon pooled endpoint)}
-      # Clerk (Change 6): auth is delegated to Clerk.
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required}
-      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?CLERK_SECRET_KEY is required}
-      CLERK_WEBHOOK_SIGNING_SECRET: ${CLERK_WEBHOOK_SIGNING_SECRET:-}
+      # Auth (Change 14): self-hosted better-auth. The secret signs the
+      # session cookie; BETTER_AUTH_URL is the canonical base URL (used for
+      # auth callbacks); TRUSTED_ORIGINS lists extra origins allowed to POST
+      # (LAN hosts + the deploy origin, comma-separated).
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+      BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-}
+      # Seed admin (Change 14): the demo/first admin login.
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?SEED_ADMIN_PASSWORD is required}
       APP_URL: ${APP_URL:-http://localhost:3000}
       INTERNAL_PDF_SECRET: ${INTERNAL_PDF_SECRET}
       INTERNAL_APP_URL: http://app:3000

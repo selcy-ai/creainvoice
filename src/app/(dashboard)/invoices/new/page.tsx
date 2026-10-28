@@ -14,7 +14,7 @@ import {
   INVOICE_TYPES,
   type InvoiceTypeValue,
 } from "@/modules/invoices/schema";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 import { InvoiceEditor } from "@/components/invoice/invoice-editor";
 import { logger } from "@/server/logger";
 

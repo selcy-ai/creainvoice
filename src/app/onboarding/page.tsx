@@ -1,11 +1,10 @@
 // src/app/onboarding/page.tsx
 // The 12-step wizard, outside the dashboard shell. Everything the steps need
-// is loaded server-side: resume step, the Clerk organizations the user may
-// select, and the already-saved profile/bank/signer snapshots.
+// is loaded server-side: resume step, the organizations the user may select,
+// and the already-saved profile/bank/signer snapshots.
 //
-// Change 6: organizations come from CLERK (the webhook mirrors memberships
-// locally). Creating one happens through Clerk, so step 1 offers the Clerk
-// <OrganizationList> for creation/selection plus the local mirror list.
+// Change 14: organizations are local rows (created by this app's onboarding
+// step 1); there is no external auth organization to mirror.
 
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
@@ -15,7 +14,7 @@ import { getWorkspaceOverview } from "@/modules/workspace/service";
 import { getProfileByOrg, toProfileView } from "@/modules/profiles/service";
 import { getDefaultBankAccount, toBankAccountView } from "@/modules/bank-accounts/service";
 import { getDefaultSigner, toSignerView } from "@/modules/signers/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 import { env } from "@/server/env";
 
 export const metadata: Metadata = {

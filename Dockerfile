@@ -7,11 +7,11 @@
 #      (this project's dev machine) — `npm ci` fails, the fallback removes the
 #      partial install and `COPY . .` supplies the host-installed tree.
 # Either way the build stage ends with a full dependency set and runs
-# `prisma generate` + `npm run build` itself.
+# `drizzle-kit push` (schema apply) + `npm run build` itself.
 #
-# The Prisma migration CLI (a devDependency) is NOT part of Next's standalone
-# output — the entrypoint needs it for `prisma migrate deploy`, so its
-# production dependency closure is staged separately (see the node -e step).
+# The auth stack is self-hosted better-auth (Change 14): there is no Clerk
+# key to provision, and the entrypoint seeds a real admin login from
+# SEED_ADMIN_PASSWORD.
 
 # ─── libssl provider ─────────────────────────────────────────────────────────
 # Prisma query engine needs libssl/libcrypto 3 which bookworm-slim omits.
@@ -37,25 +37,28 @@ RUN npm ci --prefer-offline --no-audit --no-fund \
     || { echo "[build] npm ci unavailable — falling back to host node_modules from the build context"; rm -rf node_modules; }
 
 COPY . .
-# DATABASE_URL below is a placeholder for schema parsing only — generate
-# never connects; the runtime value comes from the compose environment.
-# Page-data collection evaluates route modules, which load the fail-fast env
-# schema — build-time placeholders satisfy it (they are NOT baked into the
-# runner image; the compose environment provides the real values at start).
+# DATABASE_URL below is a placeholder for schema parsing only — drizzle-kit
+# push never connects at build time for the schema itself; the runtime value
+# comes from the compose environment. Page-data collection evaluates route
+# modules, which load the fail-fast env schema — build-time placeholders
+# satisfy it (they are NOT baked into the runner image; the compose
+# environment provides the real values at start).
 RUN export DATABASE_URL=postgresql://placeholder@localhost:5432/placeholder \
       BETTER_AUTH_SECRET=build-placeholder-secret-at-least-32-characters \
+      BETTER_AUTH_URL=http://localhost:3000 \
       INTERNAL_PDF_SECRET=build-placeholder-pdf-secret-at-least-32-chars \
       BANK_ACCOUNT_ENCRYPTION_KEY=build-placeholder-encryption-key-32chars! \
- && npx prisma generate \
  && npm run build
 
-# Stage the Prisma CLI + its production dependency closure at a side path the
-# runner copies next to the standalone node_modules (same flat layout npm uses,
-# so require() resolution inside the CLI works unchanged).
+# Stage the extra runtime tooling NOT part of Next's standalone trace that the
+# entrypoint needs: drizzle-kit (schema push at start) and better-auth +
+# argon2 (seed.mjs hashes the seed admin password with the SAME hasher login
+# verifies against). Same flat node_modules layout npm uses, so require()
+# resolution inside those packages works unchanged.
 RUN node -e '\
 const fs = require("fs"), path = require("path"); \
 const root = "node_modules", out = "/extra-cli/node_modules"; \
-const seen = new Set(), queue = ["prisma", "better-auth"]; \
+const seen = new Set(), queue = ["drizzle-kit", "better-auth", "@better-auth/drizzle-adapter", "argon2", "pg", "drizzle-orm", "decimal.js", "zod"]; \
 while (queue.length) { \
   const name = queue.shift(); \
   if (seen.has(name)) continue; \
@@ -70,7 +73,7 @@ for (const name of seen) { \
   fs.mkdirSync(path.dirname(dest), { recursive: true }); \
   fs.cpSync(path.join(root, name), dest, { recursive: true }); \
 } \
-console.log("[build] prisma CLI closure staged: " + seen.size + " packages");'
+console.log("[build] runtime CLI closure staged: " + seen.size + " packages");'
 
 # ─── Production runner ──────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS runner
@@ -90,18 +93,19 @@ RUN addgroup --system --gid 1001 nodejs \
  && mkdir -p /data/uploads /data/invoices \
  && chown -R nextjs:nodejs /data
 
-# App: standalone output (traced runtime deps) + static assets + prisma
-# (schema + migrations for the entrypoint) + scripts. Paths are absolute:
-# COPY --from resolves sources from the stage ROOT, not WORKDIR.
+# App: standalone output (traced runtime deps) + static assets + schema +
+# scripts. Paths are absolute: COPY --from resolves sources from the stage
+# ROOT, not WORKDIR.
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
-COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/src/db/schema.ts ./src/db/schema.ts
+COPY --from=build /app/drizzle.config.ts ./drizzle.config.ts
 COPY --from=build /app/scripts ./scripts
 # Extra runtime tooling NOT part of Next's standalone trace, but needed by the
-# entrypoint scripts: the Prisma migration CLI (migrate deploy) and
-# better-auth (seed.mjs hashes the seed admin password with the SAME hasher
-# login verifies against). Staged as a flat node_modules that merges with the
+# entrypoint scripts: drizzle-kit (schema push) and better-auth/argon2
+# (seed.mjs hashes the seed admin password with the SAME hasher login
+# verifies against). Staged as a flat node_modules that merges with the
 # standalone tree above.
 COPY --from=build /extra-cli/node_modules ./node_modules
 

@@ -1,7 +1,8 @@
-// src/server/env.ts — validated environment (Change 6: Clerk + Neon stack).
+// src/server/env.ts — validated environment (Change 14: self-hosted better-auth).
 //
 // The app fails fast at startup when a required variable is missing (Zod
-// schema). Production values live in the Vercel dashboard, never in the repo.
+// schema). Production values live in the hosting dashboard (Dokploy/Coolify),
+// never in the repo.
 
 import { z } from "zod";
 
@@ -18,11 +19,17 @@ const envSchema = z.object({
   // to Neon (engineer decision, Change 6).
   DATABASE_URL: z.string().min(1),
 
-  // Auth — Clerk (Change 6). The publishable key is safe for the client
-  // bundle; the secret key and the webhook signing secret never are.
-  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: z.string().min(1),
-  CLERK_SECRET_KEY: z.string().min(1),
-  CLERK_WEBHOOK_SIGNING_SECRET: z.string().optional(),
+  // Auth — better-auth, self-hosted (Change 14). The secret signs the
+  // session cookie; the URL is the canonical base URL for auth callbacks;
+  // trusted origins is the comma-separated list of extra origins allowed to
+  // POST (LAN hosts + the deploy origin).
+  BETTER_AUTH_SECRET: z.string().min(32),
+  BETTER_AUTH_URL: z.string().url().default("http://localhost:3000"),
+  BETTER_AUTH_TRUSTED_ORIGINS: z.string().default(""),
+
+  // Seed admin (Change 14): the demo/first admin created by scripts/seed.mjs.
+  // Never commit a real value; rotate after first login.
+  SEED_ADMIN_PASSWORD: z.string().min(8).optional(),
 
   // PDF service
   INTERNAL_PDF_SECRET: z.string().min(32),

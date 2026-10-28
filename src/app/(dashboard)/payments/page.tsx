@@ -13,7 +13,7 @@ import { env } from "@/server/env";
 import { PAYMENTS_PAGE_SIZE } from "@/modules/payments/schema";
 import { listPayableInvoices, listPayments } from "@/modules/payments/service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "Pembayaran — creainvoice",

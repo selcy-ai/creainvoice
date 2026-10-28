@@ -1,10 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
-import { MenuIcon } from "lucide-react";
-import { UserButton } from "@clerk/nextjs";
+import { LogOutIcon, MenuIcon, UserIcon } from "lucide-react";
 import { CommandPalette } from "@/components/layout/command-palette";
 import {
   NAV_GROUPS,
@@ -13,9 +12,19 @@ import {
 } from "@/components/layout/nav-config";
 import { GuardedLink, NavigationBlockerProvider } from "@/components/layout/navigation-blocker";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
+import { WorkspaceSwitcher, type SwitcherMembership } from "@/components/layout/workspace-switcher";
 import { toast } from "@/components/ui/toast";
 import { buttonVariants } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   Sheet,
   SheetContent,
@@ -126,16 +135,14 @@ function Breadcrumb() {
 
 export function AppShell({
   user,
-  memberships: _memberships,
-  activeOrganizationId: _activeOrganizationId,
+  memberships,
+  activeOrganizationId,
   navVisibility,
   children,
 }: {
   user: ShellUser;
-  /** Change 6: workspace switching is Clerk's <OrganizationSwitcher />; the
-   *  membership list is no longer rendered by this shell. Kept in the props
-   *  so the dashboard layout stays readable — intentionally unused. */
-  memberships?: unknown[];
+  /** Active memberships for the workspace switcher (resolved server-side). */
+  memberships?: SwitcherMembership[];
   activeOrganizationId?: string | null;
   /** Permission flags for the gated sidebar entries (resolved server-side). */
   navVisibility?: NavVisibility;
@@ -203,16 +210,12 @@ export function AppShell({
 
             <div className="ml-auto flex items-center gap-2">
               <CommandPalette navVisibility={visibility} />
-              <WorkspaceSwitcher />
-              <ThemeToggle />
-              <UserButton
-                appearance={{
-                  elements: {
-                    rootBox: "flex",
-                    avatarBox: "size-8 rounded-lg",
-                  },
-                }}
+              <WorkspaceSwitcher
+                memberships={memberships ?? []}
+                activeOrganizationId={activeOrganizationId ?? null}
               />
+              <ThemeToggle />
+              <UserMenu user={user} />
             </div>
           </header>
 
@@ -265,3 +268,63 @@ export function AppShell({
 // `toast` is re-exported so callers that previously imported the shell for the
 // toast helper keep compiling during the Change 6 migration.
 export { toast };
+
+// ─── User menu (Change 14: replaces Clerk's <UserButton />) ────────────────
+
+/**
+ * Local account menu: avatar + name/email, and a sign-out action that hits
+ * better-auth's /sign-out endpoint (which deletes the session row server
+ * side — security-standards: logout mengakhiri session server-side) and then
+ * routes to /login.
+ */
+function UserMenu({ user }: { user: ShellUser }) {
+  const router = useRouter();
+  const [signingOut, setSigningOut] = React.useState(false);
+
+  const initials = React.useMemo(() => {
+    const source = user.name ?? user.email ?? "?";
+    return source
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join("");
+  }, [user.name, user.email]);
+
+  async function handleSignOut() {
+    setSigningOut(true);
+    try {
+      await fetch("/api/auth/sign-out", { method: "POST" });
+    } finally {
+      setSigningOut(false);
+      router.push("/login");
+      router.refresh();
+    }
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "rounded-lg")}
+        aria-label="Menu akun"
+      >
+        <Avatar className="size-8 rounded-lg">
+          <AvatarFallback>{initials || <UserIcon aria-hidden="true" className="size-4" />}</AvatarFallback>
+        </Avatar>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="flex flex-col gap-0.5">
+            <span className="truncate text-sm font-medium text-foreground">{user.name ?? "Tanpa nama"}</span>
+            <span className="truncate text-xs font-normal text-muted-foreground">{user.email ?? "-"}</span>
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={handleSignOut} disabled={signingOut} className="gap-2">
+          <LogOutIcon aria-hidden="true" className="size-3.5" />
+          <span className="text-sm">Keluar</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}

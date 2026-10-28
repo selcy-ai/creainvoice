@@ -4,20 +4,23 @@
 // writes profile data, calls the domain service, then persists the furthest
 // step reached (resume point). Nothing here trusts a client-computed total.
 //
-// Change 6: organizations live in CLERK, so step 1 creates the organization
-// through the Clerk Backend SDK (clerkClient.organizations.createOrganization,
-// the creator becomes an admin — flat workspace, no role tiers) and mirrors
-// the row locally. Switching the active organization is Clerk's job
-// (<OrganizationSwitcher>), so the wizard's "select existing" branch simply
-// records the chosen organization in the local mirror.
+// Change 14: organizations are local rows again — step 1 INSERTs into
+// `organizations` + `memberships` (role admin — flat workspace, no role
+// tiers) inside a transaction, then stores the new organization on the
+// better-auth session row so the wizard — and the shell — see it as the
+// active workspace immediately. No third-party instance involved, so the
+// "organisasi tidak aktif" failure cannot happen anymore.
 
 "use server";
 
 import { actionRequest, formDataString, toActionError, zodFailure } from "@/lib/action";
 import { apiFailure, apiOk, type ActionResult } from "@/lib/api-response";
 import { AppError } from "@/lib/errors";
-import { clerkClient } from "@clerk/nextjs/server";
-import { requireSession, type AuthSession } from "@/lib/clerk";
+import { getSessionToken, requireSession, type AuthSession } from "@/lib/auth";
+import { db } from "@/server/db";
+import { memberships, organizations } from "@/db/schema";
+import { createId } from "@/db/id";
+import { logAudit } from "@/modules/audit/service";
 import {
   requireWorkspaceScope,
   resolveWorkspaceScope,
@@ -80,7 +83,7 @@ function stepFromForm(form: FormData): number {
 
 type WizardOk<T> = ActionResult<T>;
 
-// ─── Step 1 — organization (created in Clerk, mirrored locally) ───────────
+// ─── Step 1 — organization (created locally, Change 14) ────────────────────
 
 const workspaceChoiceSchema = z.object({
   mode: z.enum(["create", "select"]),
@@ -92,6 +95,84 @@ const workspaceChoiceSchema = z.object({
     .max(80, "Nama organisasi maksimal 80 karakter.")
     .optional(),
 });
+
+/**
+ * Creates the organization + an ACTIVE admin membership locally, in one
+ * transaction. Replaces the Clerk organization API (Change 14): no external
+ * instance can refuse this row anymore. Also stores the new organization on
+ * the session row so it is the active workspace from the very first read.
+ *
+ * The audit trail the Clerk webhook used to write (ORGANIZATION_CREATED +
+ * MEMBERSHIP_CHANGED) is emitted here — the emit point now lives where the
+ * rows are actually created (feature 01 audit invariant, kept alive).
+ */
+async function createOrganizationForMember(
+  userId: string,
+  name: string,
+): Promise<{ organizationId: string }> {
+  const organizationId = createId();
+  const membershipId = createId();
+  const slug = `org-${createId().toLowerCase()}`;
+
+  await db.transaction(async (tx) => {
+    await tx.insert(organizations).values({
+      id: organizationId,
+      name,
+      slug,
+      status: "ACTIVE",
+    });
+    await tx.insert(memberships).values({
+      id: membershipId,
+      userId,
+      organizationId,
+      status: "ACTIVE",
+    });
+  });
+
+  // Audit rows are written outside the create transaction and are
+  // best-effort (logAudit swallows its own failure): the workspace creation
+  // must not roll back because the trail could not be recorded.
+  await logAudit({
+    action: "ORGANIZATION_CREATED",
+    organizationId,
+    actorUserId: userId,
+    entityType: "organization",
+    entityId: organizationId,
+    metadata: { name, slug },
+    request: null,
+  }).catch(() => {
+    // logAudit already logged the failure; never surface it to the wizard.
+  });
+  await logAudit({
+    action: "MEMBERSHIP_CHANGED",
+    organizationId,
+    actorUserId: userId,
+    entityType: "membership",
+    entityId: membershipId,
+    metadata: { change: "created", role: "admin" },
+    request: null,
+  }).catch(() => {
+    // best-effort
+  });
+
+  return { organizationId };
+}
+
+/** Stores the active organization on the better-auth session row. */
+async function activateWorkspaceOnSession(
+  session: AuthSession,
+  organizationId: string,
+): Promise<void> {
+  const token = await getSessionToken();
+  if (!token) return; // the wizard still works; the next login picks it up
+  try {
+    const { setActiveOrganization } = await import("@/lib/auth");
+    await setActiveOrganization(session.userId ?? "", token, organizationId);
+  } catch {
+    // The membership row was just written; a failed session write must not
+    // block the wizard (resolveActiveOrgId falls back to the first org).
+  }
+}
 
 export async function chooseWorkspaceAction(form: FormData): Promise<
   WizardOk<{ organizationId: string }>
@@ -113,9 +194,9 @@ export async function chooseWorkspaceAction(form: FormData): Promise<
           organizationId: "Pilih salah satu organisasi.",
         });
       }
-      // Clerk owns membership; the webhook mirrors it. Selecting an org the
-      // user belongs to is switched with Clerk's session-claims mechanism —
-      // here we only verify the local mirror exists.
+      // The membership (created at registration or by an admin) is verified
+      // by resolveWorkspaceScope on the next read — here we only record the
+      // choice on the session.
       organizationId = parsed.data.organizationId;
     } else {
       if (!parsed.data.name) {
@@ -123,15 +204,12 @@ export async function chooseWorkspaceAction(form: FormData): Promise<
           name: "Nama organisasi wajib diisi.",
         });
       }
-      // Clerk creates the organization and makes this user its admin
-      // (flat workspace — every member is a full admin, Change 6).
-      const organization = await (await clerkClient()).organizations.createOrganization({
-        name: parsed.data.name,
-        createdBy: session.userId ?? "",
-      });
-      organizationId = organization.id;
+      // Local INSERT: the app is the only source of truth (Change 14).
+      const created = await createOrganizationForMember(session.userId ?? "", parsed.data.name);
+      organizationId = created.organizationId;
     }
 
+    await activateWorkspaceOnSession(session, organizationId);
     await advanceOnboardingStep(session.userId ?? "", 2);
     return apiOk({ organizationId });
   } catch (error) {

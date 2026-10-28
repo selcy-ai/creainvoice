@@ -22,7 +22,7 @@ import {
 import { SetDefaultSignerButton } from "@/components/signers/set-default-signer-button";
 import { listSignersPage } from "@/modules/signers/service";
 import { resolveWorkspaceScope } from "@/modules/workspace/service";
-import { getSession } from "@/lib/clerk";
+import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "Penanda Tangan — creainvoice",
