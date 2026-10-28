@@ -51,7 +51,7 @@ Update this file whenever the current phase, active feature, or implementation s
 
 ## Next Up
 
-- *(kosong — feature 11 selesai; **project GA**. Backlog pasca-GA = daftar Open Questions di bawah, diambil satu per satu di chat terpisah.)*
+- **Change 14 (`14-change-better-auth-selfhosted.md`) — swap Clerk → better-auth ( self-hosted ).** Spec tertulis; security-standards baris 7 sudah di-sync ( register publik dinyalakan ). Blast radius: `src/lib/clerk.ts` (→`auth.ts`), `src/proxy.ts`, `(auth)/login`, webhook dihapus, onboarding langkah 1 INSERT lokal, 34 file konsumen `AuthSession` ( signature tetap, verifikasi via typecheck ), env+Docker. Build via `@selcy-implement 14` di chat baru. Alasan engineer: vendor lock-in (#3) + target deploy Dokploy (#4).
 
 ## Completed
 
@@ -116,6 +116,7 @@ Update this file whenever the current phase, active feature, or implementation s
 - Modular monolith + pdf-service terpisah (Playwright Chromium isolasi runtime).
 - decimal.js + Prisma Decimal untuk semua nominal; server recalculation wajib.
 - Next.js App Router + Better Auth (username/email, no public registration).
+- Change 14 (2026-10-28): **Auth = better-auth self-hosted, register publik dinyalakan** — menggantikan Clerk (feat-13). Alasan engineer: vendor lock-in (#3) + target deploy Dokploy (#4). Skema multi-tenant tetap; session di Drizzle `sessions`.
 - Docker Compose (app + postgres + pdf-service) deploy via Coolify, auto-deploy on push main.
 - Tracer Bullet vertical slices, GA tier (test suite wajib per feature).
 - Repository: https://github.com/maulanaadib/invoice-me, branch main, 1 commit per feature.

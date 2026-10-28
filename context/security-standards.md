@@ -4,7 +4,7 @@ Non negotiable rules. Every feature spec inherits these; a feature may add to th
 
 ## Auth and Session
 
-- Login dengan username **atau** email + password via Better Auth. **Public sign-up dinonaktifkan.**
+- Login dengan username **atau** email + password via Better Auth. **Public sign-up diaktifkan** ( Change 14: self-hosted, siapa saja bisa daftar di `/register`; wajib verifikasi email sebelum bisa login ).
 - Session cookie: `HttpOnly`, `Secure` di production, `SameSite`. Remember session opsional (extended expiry).
 - **Rate limit login**: maksimal percobaan gagal beruntun per username+IP, lalu **lockout sementara** (durasi escalating). Login berhasil/gagal tercatat di audit log.
 - **Force password change**: saat login pertama (password dari admin) atau setelah admin reset password. User tidak bisa pakai temporary password untuk akses fitur.
