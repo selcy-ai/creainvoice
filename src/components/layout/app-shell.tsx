@@ -294,12 +294,31 @@ function UserMenu({ user }: { user: ShellUser }) {
   async function handleSignOut() {
     setSigningOut(true);
     try {
-      await fetch("/api/auth/sign-out", { method: "POST" });
+      // security-standards.md line 14: "Logout mengakhiri session server-side,
+      // tidak hanya menghapus cookie." better-auth's /sign-out declares a JSON
+      // body, so the request must carry Content-Type: application/json — a
+      // POST with a body but no content type is answered 415 and the endpoint
+      // never runs (the session row would survive).
+      const response = await fetch("/api/auth/sign-out", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) {
+        // Never leave a revoked-looking client behind a failed server-side
+        // logout: surface the failure instead of navigating anyway.
+        toast.add({
+          title: "Gagal keluar",
+          description: "Sesi tidak dapat diakhiri server-side. Coba lagi.",
+          type: "error",
+        });
+        return;
+      }
     } finally {
       setSigningOut(false);
-      router.push("/login");
-      router.refresh();
     }
+    router.push("/login");
+    router.refresh();
   }
 
   return (

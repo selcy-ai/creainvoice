@@ -56,7 +56,7 @@ let firstLogoPath: string;
 
 async function login(page: Page, who: TestUser): Promise<void> {
   await page.goto("/login");
-  await page.getByLabel("Username atau email").fill(who.username);
+  await page.getByLabel("Email").fill(who.email);
   await page.getByLabel("Kata sandi").fill(who.password);
   await page.getByRole("button", { name: "Masuk", exact: true }).click();
 }
@@ -110,7 +110,7 @@ test.describe("onboarding 12 langkah (fitur 02)", () => {
       await db.organization.delete({ where: { id: organizationId } });
     }
     await db.auditLog.deleteMany({ where: { actorUserId: user.id } });
-    // Change 6: session/account were better-auth tables; Clerk owns them now.
+    // Change 14: the credential account + sessions cascade on user delete.
     await db.user.deleteMany({ where: { id: user.id } });
   });
 

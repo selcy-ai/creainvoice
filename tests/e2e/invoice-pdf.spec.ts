@@ -41,7 +41,7 @@ function ctx() {
 
 async function login(page: Page): Promise<void> {
   await page.goto("/login");
-  await page.getByLabel("Username atau email").fill(user.username);
+  await page.getByLabel("Email").fill(user.email);
   await page.getByLabel("Kata sandi").fill(user.password);
   // Wait for BOTH the auth response (cookie set) and the client-side
   // redirect — navigating away while the sign-in is still in flight lands

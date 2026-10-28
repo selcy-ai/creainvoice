@@ -98,6 +98,10 @@ function timingSafeEqual(a: Buffer, b: Buffer): boolean {
 }
 
 async function hashPassword(password: string): Promise<string> {
+  // Same guard as verifyPassword: the module-scope argon2 probe is
+  // fire-and-forget, so the first hash after a cold start must re-probe
+  // rather than silently fall through to the scrypt fallback.
+  await ensureHasherReady();
   if (argon2Available) {
     try {
       return await argon2.hash(password);

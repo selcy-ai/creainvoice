@@ -305,6 +305,11 @@ async function main() {
   const client = new Pool({ connectionString: url });
 
   try {
+    // Validate the credential FIRST (N4): a missing/short SEED_ADMIN_PASSWORD
+    // must exit before ANY row is written, never leave a half-seeded
+    // pre-verified user with no credential account behind it.
+    const password = seedAdminPassword();
+
     // ── Admin user (a REAL better-auth login, Change 14) ─────────────────
     const user = await upsert(client, "user", "id", {
       id: DEMO_USER.id,
@@ -320,7 +325,6 @@ async function main() {
     // The credential account: argon2-hashed SEED_ADMIN_PASSWORD, provider
     // "credential", pre-verified. Re-running re-hashes (idempotent result,
     // not an accumulating row).
-    const password = seedAdminPassword();
     const passwordHash = await argon2.hash(password);
     await upsert(
       client,

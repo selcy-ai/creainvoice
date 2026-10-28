@@ -80,7 +80,7 @@ function rowFor(page: Page, invoiceId: string) {
 
 async function login(page: Page): Promise<void> {
   await page.goto("/login");
-  await page.getByLabel("Username atau email").fill(user.username);
+  await page.getByLabel("Email").fill(user.email);
   await page.getByLabel("Kata sandi").fill(user.password);
   // Wait for BOTH the auth response (cookie set) and the client-side redirect.
   await Promise.all([

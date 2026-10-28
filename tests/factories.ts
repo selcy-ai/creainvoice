@@ -1,12 +1,15 @@
 // tests/factories.ts — Drizzle-backed factories for integration tests (Change 6).
 //
 // All rows go through the real Drizzle schema against the Neon test database.
-// Call resetDatabase() in beforeAll per test file. Users mirror the Clerk
-// shape (id, email, name, username, onboarding flags) — there is no password
-// column anymore because Clerk owns credentials.
+// Call resetDatabase() in beforeAll per test file. Change 14 made users REAL
+// logins again: createUser hashes the password with argon2 and stores it on
+// a `account` row (providerId "credential"), so both the integration suite
+// (which drives the session row) and the E2E suite (which signs in through
+// the real /login form) share one honest fixture.
 
 import { db } from "@/db/client";
 import {
+  accounts,
   auditLogs,
   bankAccounts,
   customerContacts,
@@ -21,6 +24,7 @@ import {
   payments,
   pdfJobs,
   projectReferences,
+  sessions,
   signers,
   uploadRecords,
   users,
@@ -45,6 +49,10 @@ export async function resetDatabase(): Promise<void> {
   await db.delete(customerContacts);
   await db.delete(customers);
   await db.delete(memberships);
+  // Change 14: credential accounts and sessions are real rows now (they are
+  // also cascaded by user_id, but an explicit delete keeps the order legible).
+  await db.delete(sessions);
+  await db.delete(accounts);
   await db.delete(users);
   await db.delete(organizations);
 }
@@ -59,9 +67,15 @@ export interface TestUserOptions {
   username?: string;
   email?: string;
   name?: string;
-  /** Kept for call-site compatibility: Clerk owns the password now, so the
-   *  value is recorded on the returned object but never persisted. */
+  /** Change 14: the password is REAL now — it is argon2-hashed and stored on
+   *  a `account` row (providerId "credential") so the login form can
+   *  actually sign the fixture user in. Set `withCredential: false` for the
+   *  unit-style fixtures that never log in through the browser. */
   password?: string;
+  /** Create a usable credential login (default true). The E2E specs sign in
+   *  through the real /login form; integration specs drive the session row
+   *  directly and do not need it. */
+  withCredential?: boolean;
   status?: "ACTIVE" | "SUSPENDED";
   /** Defaults to TRUE so tests keep their "straight to dashboard"
    *  expectation; onboarding tests opt in with false. */
@@ -93,6 +107,20 @@ export async function createUser(options: TestUserOptions = {}): Promise<TestUse
     onboardingComplete: options.onboardingComplete ?? true,
     onboardingStep: options.onboardingStep ?? 1,
   });
+
+  // Change 14: a fixture user is a REAL login. The hash goes through the
+  // app's own hashUserPassword (argon2), so POST /api/auth/sign-in/email
+  // accepts it exactly like a signed-up user.
+  if (options.withCredential !== false) {
+    const { hashUserPassword } = await import("@/lib/auth");
+    await db.insert(accounts).values({
+      id: createId(),
+      accountId: id,
+      providerId: "credential",
+      userId: id,
+      password: await hashUserPassword(password),
+    });
+  }
 
   return { id, username, email, password, name: options.name ?? username };
 }
