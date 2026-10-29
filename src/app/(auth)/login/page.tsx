@@ -1,9 +1,11 @@
 // src/app/(auth)/login/page.tsx — local sign-in form (Change 14).
 //
-// Replaces Clerk's <SignIn />: the app now owns the whole flow. The form is a
-// server-rendered card that POSTs to better-auth's own endpoint
-// (POST /api/auth/sign-in/email) — no client auth SDK, no third-party host,
-// so login works from any origin the deployment trusts (LAN included).
+// Replaces Clerk's <SignIn />: the app now owns the whole flow. The form carries
+// action=/api/auth/sign-in/email + method=POST so a browser with JavaScript
+// blocked or slow to hydrate still submits the credentials in the POST body —
+// never as a GET that would leak them into the URL (security-standards). When
+// JS runs, the client handler intercepts and takes over (progressive
+// enhancement), so login works from any origin the deployment trusts.
 //
 // The card and layout are the v4 ones this app already ships: this page only
 // supplies the form inside (auth)/layout (BR-6 of the change spec).

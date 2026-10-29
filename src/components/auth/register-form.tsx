@@ -90,7 +90,23 @@ export function RegisterForm() {
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
+      {/*
+        action + method="POST" are the no-JS contract: when JS is blocked or
+        slow to hydrate (the tunnel/phone case), the browser still submits the
+        form as a POST with the credentials in the BODY — never a GET that
+        would land them in the URL (security-standards). better-auth accepts
+        form-encoded on these routes and enforces Fetch-Metadata/origin CSRF
+        checks on it. When JS runs, onSubmit intercepts and takes over.
+      */}
+      <form
+        action="/api/auth/sign-up/email"
+        method="POST"
+        onSubmit={handleSubmit}
+        className="flex flex-col gap-4"
+        noValidate
+      >
+        {/* The no-JS POST needs the post-registration destination in the body. */}
+        <input type="hidden" name="callbackURL" value="/login?registered=1" />
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="name">Nama</Label>
           <Input
@@ -178,6 +194,16 @@ export function RegisterForm() {
           {loading ? "Memproses…" : "Daftar"}
         </Button>
       </form>
+
+      {/* No-JS guidance: the form still submits as a POST above (never a GET
+       * that would leak credentials into the URL), but the auth endpoint
+       * answers JSON, so a browser without JavaScript will show that
+       * response instead of a page. */}
+      <noscript>
+        <p className="mt-4 text-xs text-muted-foreground">
+          JavaScript dinonaktifkan. Aktifkan JavaScript untuk mendaftar.
+        </p>
+      </noscript>
 
       <p className="mt-6 text-center text-sm text-muted-foreground">
         Sudah punya akun?{" "}
