@@ -42,7 +42,7 @@ export function LoginForm() {
     const formData = new FormData(event.currentTarget);
     const email = String(formData.get("email") ?? "").trim();
     const password = String(formData.get("password") ?? "");
-    const rememberMe = formData.get("rememberMe") === "on";
+    const rememberMe = formData.get("remember") === "on";
 
     const nextErrors: FieldErrors = {};
     if (!email) nextErrors.email = "Email wajib diisi.";
@@ -147,7 +147,7 @@ export function LoginForm() {
         <label className="flex items-center gap-2 text-sm text-muted-foreground">
           <input
             type="checkbox"
-            name="rememberMe"
+            name="remember"
             className="size-4 rounded border-border accent-primary"
           />
           Ingat saya di perangkat ini
